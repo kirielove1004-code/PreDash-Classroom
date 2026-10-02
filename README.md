@@ -7,10 +7,11 @@
 1. 이 저장소의 Fork 버튼 → 본인 계정에 복사합니다.
 2. Streamlit Community Cloud에서 본인 Fork의 main / app.py를 배포합니다.
 3. 앱 Settings → Secrets에 APP_PASSWORD를 설정합니다. 기업 분석용 DART·공공데이터 키는 .streamlit.example.toml의 빈 항목을 본인 키로 설정합니다.
-4. 앱 로그인 → 연결 설정 → 모의투자 선택 → 본인 App Key·App Secret·계좌번호 입력 → 연결 확인.
-5. 관심종목·투자 근거·대시보드를 자신의 기획에 맞춰 수정합니다.
+4. Supabase SQL Editor에서 `supabase-workspace.sql`을 한 번 실행하고 Secrets에 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`를 설정하면 작업 내용이 자동 저장됩니다.
+5. 앱 로그인 → 연결 설정 → 모의투자 선택 → 본인 App Key·App Secret·계좌번호 입력 → 연결 확인.
+6. 관심종목·투자 근거·대시보드를 자신의 기획에 맞춰 수정합니다.
 
-증권사 키는 Secrets나 GitHub에 저장하지 않습니다. 접속 세션에서만 사용하며 연결 해제·로그아웃 시 키와 접속 중 실습 자료를 제거합니다. 필요한 실습 기록은 먼저 백업하세요. 서버가 키를 처리하므로 각자 관리하는 앱에서 사용하세요.
+관심종목, 산업·기업 연결 메모, 모의투자 기록과 마지막 메뉴는 Supabase에 자동 저장됩니다. 증권사 키·계좌번호·실계좌 잔고와 조회 캐시는 영구 저장하지 않으며 연결 해제·로그아웃 시 세션에서 제거합니다. Supabase 서비스 역할 키는 반드시 Streamlit Secrets에만 넣고 GitHub 코드나 게시판에 올리지 마세요.
 
 ## 교육과 소통
 
