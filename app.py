@@ -45,6 +45,7 @@ if not hasattr(watch_module,'backup_names'):
     watch_module=importlib.reload(watch_module)
 clean_codes,export_backup,restore_backup,MAX_WATCH,clean_names,backup_names = (getattr(watch_module,k) for k in ('clean_codes','export_backup','restore_backup','MAX_WATCH','clean_names','backup_names'))
 from predash.paper import new_account, replay, execute, export_account, restore_account, PaperError
+from predash.persistence import WorkspaceStore, WorkspaceError, capture as capture_workspace, restore as restore_workspace
 
 st.set_page_config(page_title='PreDash · 내 계좌 점검실', page_icon='◈', layout='wide')
 st.html('''<style>
@@ -94,7 +95,7 @@ p,li{font-size:16px;line-height:1.5}button p{font-size:16px!important}
 .pd-evidence-status{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border:1px solid #dddccc;background:#fffef9;margin:8px 0 16px}.pd-evidence-status>div{padding:10px 14px;border-right:1px solid #dddccc}.pd-evidence-status>div:last-child{border:0}.pd-evidence-status small{display:block;font-size:13px;color:#53665c}.pd-evidence-status b{font-size:16px;color:#214b3a}@media(max-width:700px){.pd-evidence-status{grid-template-columns:1fr 1fr}}
 </style>''')
 try:
-    for k in ('APP_PASSWORD','DART_CRTFC_KEY','DATA_GO_KR_SERVICE_KEY','KRX_AUTH_KEY','CUSTOMS_API_KEY'):
+    for k in ('APP_PASSWORD','DART_CRTFC_KEY','DATA_GO_KR_SERVICE_KEY','KRX_AUTH_KEY','CUSTOMS_API_KEY','SUPABASE_URL','SUPABASE_SERVICE_ROLE_KEY'):
         if k in st.secrets: os.environ[k]=str(st.secrets[k])
 except FileNotFoundError:
     pass
@@ -232,6 +233,33 @@ if password and not st.session_state.get('authorized'):
             st.error('비밀번호를 확인하세요.')
     st.stop()
 
+try:
+    workspace_store=WorkspaceStore(os.getenv('SUPABASE_URL',''),os.getenv('SUPABASE_SERVICE_ROLE_KEY',''))
+    workspace_error=''
+except WorkspaceError as exc:
+    workspace_store=WorkspaceStore()
+    workspace_error=str(exc)
+
+if workspace_store.configured and not st.session_state.get('_workspace_loaded'):
+    try:
+        restored_workspace=restore_workspace(st.session_state,workspace_store.load())
+        st.session_state._workspace_loaded=True
+        st.session_state._workspace_last_page=restored_workspace.get('last_page')
+    except WorkspaceError as exc:
+        workspace_error=str(exc)
+
+def persist_workspace(show_success=False):
+    if not workspace_store.configured:
+        return False
+    try:
+        workspace_store.save(capture_workspace(st.session_state))
+        st.session_state._workspace_last_page=st.session_state.get('navigation')
+        if show_success:st.success('마지막 작업까지 안전하게 저장했습니다.')
+        return True
+    except (WorkspaceError,ValueError) as exc:
+        st.error(str(exc))
+        return False
+
 def open_research(code):
     st.session_state.navigation='투자 근거'
     st.session_state.decision_pick=code
@@ -253,7 +281,10 @@ with st.sidebar:
     elif 'text' in st.query_params:del st.query_params['text']
     st.caption('UI 2.8 · 본인 계정 · 조회 전용')
     if password and st.button('로그아웃'):
-        st.session_state.clear();st.rerun()
+        persist_workspace();st.session_state.clear();st.rerun()
+
+if workspace_store.configured and st.session_state.get('_workspace_last_page')!=page:
+    persist_workspace()
 
 
 if large_text:
@@ -400,9 +431,10 @@ elif page=='매매 연습':
             try:
                 st.session_state.paper_account=restore_account(uploaded.getvalue().decode('utf-8'))
                 st.session_state.paper_quotes={}
+                persist_workspace()
                 st.rerun()
             except (PaperError,UnicodeDecodeError) as exc:st.error(str(exc))
-        st.caption('현재 세션에 저장됩니다. 종료·로그아웃 전에 백업하면 다음 접속에서 기록을 이어갈 수 있습니다. 복원은 현재 모의 기록을 교체합니다.')
+        st.caption('영구 저장 연결 시 자동 저장됩니다. JSON 백업도 함께 사용할 수 있으며, 복원은 현재 모의 기록을 교체합니다.')
     account=st.session_state.get('paper_account')
     if account is None:
         with st.form('paper_start'):
@@ -410,6 +442,7 @@ elif page=='매매 연습':
             if st.form_submit_button('모의계좌 시작',type='primary'):
                 st.session_state.paper_account=new_account(int(initial))
                 st.session_state.paper_quotes={}
+                persist_workspace()
                 st.rerun()
         st.stop()
     ledger=replay(account)
@@ -464,6 +497,7 @@ elif page=='매매 연습':
                         'buy' if side=='매수' else 'sell',int(quantity),quote['price'],quote['date'],
                         datetime.now(ZoneInfo('Asia/Seoul')).isoformat(),note)
                     st.session_state.paper_notice=f"모의 {side} 기록 · {quote['name']} {quantity:,}주 × {quote['price']:,}원"
+                    persist_workspace()
                     st.rerun()
                 except PaperError as exc:st.error(str(exc))
         elif code:st.caption('체결 기준 종가를 조회하세요. 기준일이 5일을 초과한 가격은 사용하지 않습니다.')
@@ -516,6 +550,7 @@ elif page=='관심종목':
         st.query_params['watch']=','.join(st.session_state.watch_codes)
         st.session_state.watch_results={c:v for c,v in st.session_state.get('watch_results',{}).items() if c in st.session_state.watch_codes}
         st.session_state.watch_names=clean_names(st.session_state.get('watch_names',{}),st.session_state.watch_codes)
+        persist_workspace()
     with st.expander('종목 추가 · 백업 / 복원',expanded=not codes):
         with st.form('watch_lookup'):
             query=st.text_input('종목명 또는 종목코드',placeholder='예: 삼성전자 또는 005930',max_chars=40)
@@ -744,7 +779,9 @@ elif page=='투자 근거':
             stop_rule=st.text_input('가설 폐기 조건',value=previous.get('stop_rule',''),max_chars=400)
             if st.form_submit_button('산업 연결 기록 저장'):
                 st.session_state[note_key]={'sector':sector,'hs':hs,'path':path,'basis':basis,'unknown':unknown,'stop_rule':stop_rule}
-                st.success('현재 세션에 기록했습니다. 근거 리포트를 내려받으면 함께 보관됩니다.')
+                if persist_workspace(show_success=True):
+                    st.success('다음 접속에도 이 기록을 이어서 불러옵니다.')
+                else:st.warning('현재 세션에만 기록했습니다. 영구 저장 연결을 확인하세요.')
         links=st.columns(3)
         links[0].link_button('OpenDART 공식 자료','https://opendart.fss.or.kr/')
         links[1].link_button('관세청 수출입 API','https://www.data.go.kr/data/15100475/openapi.do')
@@ -766,8 +803,14 @@ elif page=='연결 설정':
         st.info('앱 Settings → Secrets에 APP_PASSWORD를 설정한 뒤 개인 계좌를 연결하세요.')
         st.stop()
     connection_form()
-    checks=[('대시보드 비밀번호','APP_PASSWORD'),('DART 인증키','DART_CRTFC_KEY'),('공공데이터포털 시세 키','DATA_GO_KR_SERVICE_KEY'),('KRX 일별 거래정보 키','KRX_AUTH_KEY'),('관세청 수출입 키','CUSTOMS_API_KEY')]
+    checks=[('대시보드 비밀번호','APP_PASSWORD'),('DART 인증키','DART_CRTFC_KEY'),('공공데이터포털 시세 키','DATA_GO_KR_SERVICE_KEY'),('KRX 일별 거래정보 키','KRX_AUTH_KEY'),('관세청 수출입 키','CUSTOMS_API_KEY'),('영구 저장 주소','SUPABASE_URL'),('영구 저장 비밀키','SUPABASE_SERVICE_ROLE_KEY')]
     for name,key in checks: st.write(('● 설정됨  ' if os.getenv(key,'').strip() else '○ 입력 필요  ')+name)
+    if workspace_store.configured:
+        st.success('관심종목·투자 근거·모의투자 기록 자동 저장이 연결되었습니다.')
+        if st.button('현재 작업 지금 저장',type='primary'):persist_workspace(show_success=True)
+    else:
+        st.warning(workspace_error or '영구 저장을 사용하려면 Supabase 설정 두 항목이 필요합니다.')
+        st.caption('계좌번호·증권사 API 키·잔고 조회 결과는 영구 저장하지 않습니다.')
     st.info('KIS 잔고는 증권사, 결산·공시는 OpenDART, 일별 시세는 공공데이터포털에서 조회합니다. 각 데이터의 기준일이 다릅니다.')
     if password and all(account_settings()[k] for k in ('key','secret','cano','product')):
         st.caption(f"현재 KIS 설정: {'실전' if account_settings()['mode']=='real' else '모의 또는 기본값 demo'} · 키와 계좌번호 원문은 표시하지 않습니다.")
