@@ -614,11 +614,10 @@ elif page=='매매 연습':
 elif page=='관심종목':
     st.title('관심종목 점검')
     st.html('<div class="pd-intro">저장한 종목의 추세·실적·수급을 한 화면에서 점검하세요.</div>')
-    st.caption('일별 종가: 공공데이터포털 · 동기 실적: OpenDART · 수급: 키움 연결 시 · 주문 기능 없음')
+    st.caption('일별 종가: 공공데이터포털 우선 · 실패 시 보조 시세 · 동기 실적: OpenDART · 수급: 키움 연결 시 · 주문 기능 없음')
     st.caption('배포 버전 · 2026-10-06 10:24 · 종목검색 분리 패치')
     if not api_key('DATA_GO_KR_SERVICE_KEY'):
-        st.info('연결 설정에서 공공데이터 API 키를 입력하면 관심종목 조회가 열립니다.')
-        st.stop()
+        st.info('공공데이터 시세 키가 없어도 종목 검색과 보조 시세 조회는 사용할 수 있습니다. 공식 시세는 연결 설정 후 우선 사용됩니다.')
     # Only public ticker codes are put in the bookmark URL; no account or financial payload.
     raw=st.query_params.get('watch','')
     codes=clean_codes(raw.split(',') if isinstance(raw,str) else [])
@@ -641,7 +640,7 @@ elif page=='관심종목':
             st.session_state.watch_candidates=[]
             if query.strip():
                 try:
-                    with st.spinner('공식 종목 목록을 조회합니다…'):
+                    with st.spinner('종목 목록을 조회합니다…'):
                         st.session_state.watch_candidates=official_client().search(query.strip())[:20]
                 except DataError as exc:st.error(str(exc))
             else:st.warning('종목명 또는 숫자 6자리 종목코드를 입력하세요.')
@@ -762,7 +761,6 @@ elif page=='투자 근거':
     cache_key='decision_'+code+'_'+market_name
     if refresh:
         if not re.fullmatch(r'[0-9]{6}',code):st.warning('숫자 6자리 종목코드를 입력하세요.')
-        elif not api_key('DATA_GO_KR_SERVICE_KEY'):st.warning('공공데이터포털 시세 키를 연결 설정에서 확인하세요.')
         else:
             today=datetime.now(ZoneInfo('Asia/Seoul')).date();provider=official_client()
             with st.spinner('공식 시세·실적·수급과 비교 시장을 조회합니다…'):
@@ -928,7 +926,7 @@ elif page=='연결 설정':
         st.rerun()
 
     st.subheader('연결 진단')
-    st.caption('키 저장 여부가 아니라 각 기관 서버에 실제 테스트 요청을 보내 정상·인증 실패·오류를 구분합니다.')
+    st.caption('키 저장 여부가 아니라 각 기관 서버에 실제 테스트 요청을 보내 정상·인증 실패·오류를 구분합니다. 인증 실패는 앱 코드로 우회하지 않고, 해당 API 기능만 보류합니다.')
     if st.button('4개 API 실제 연결 진단',type='primary',use_container_width=True):
         results={}
         with st.spinner('기관 API에 실제 테스트 요청 중입니다…'):
