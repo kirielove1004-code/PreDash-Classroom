@@ -246,7 +246,7 @@ def watch_fetch(code,provider,today):
                 'url':'https://dart.fss.or.kr/dsaf001/main.do?rcpNo='+row['rcept_no']}
                 for row in (notices or {}).get('list',[])]}
         except DataError as exc:result['errors']['report']=str(exc)
-    if all(account_settings()[k] for k in ('key','secret','cano','product')):
+    if all(account_settings()[k] for k in ('key','secret')):
         try:result['flow']=broker_client().investor_flow(code)
         except BrokerError as exc:result['errors']['flow']=str(exc)
     if api_key('KRX_AUTH_KEY'):
@@ -291,7 +291,7 @@ with st.sidebar:
     st.link_button('소통 게시판', 'https://etf2x.com/learn/live')
     st.html('<div class="pd-brand-note">나의 투자 흐름을 읽는 공간</div><div class="pd-side-label">투자 워크스페이스</div>')
     page=st.radio('메뉴',['오늘의 점검','관심종목','투자 근거','내 계좌','모의투자','매매 연습','매매 습관','연결 설정'],label_visibility='collapsed',key='navigation',
-        index=0 if all(account_settings()[k] for k in ('key','secret','cano','product')) else 1,
+        index=0 if all(account_settings()[k] for k in ('key','secret')) else 1,
         format_func=lambda item:{'오늘의 점검':'01  투자 대시보드','내 계좌':'04  내 계좌 · 보유종목',
             '관심종목':'02  관심종목 분석','매매 습관':'07  매매 기록 · 습관',
             '모의투자':'05  모의투자 계좌','매매 연습':'06  매매 연습','연결 설정':'08  데이터 연결','투자 근거':'03  투자 근거 · 비교 차트'}[item])
@@ -344,13 +344,13 @@ if page=='모의투자':
     st.html('<div class="pd-intro">키움 모의계좌를 연결해 잔고와 실제 모의 체결 기록을 확인하세요.</div>')
     st.caption('키움증권 모의투자 서버 · 모의계좌 데이터 · 실전 잔고와 별도 보관')
     settings=account_settings('demo')
-    configured=all(settings[k] for k in ('key','secret','cano','product'))
+    configured=all(settings[k] for k in ('key','secret'))
     with st.expander('모의계좌 연결 방법',expanded=not configured):
         st.write('키움증권에서 모의투자 계좌를 발급받고, 그 모의계좌에 연결된 App Key와 App Secret을 발급받으세요.')
         st.write('이 앱의 Settings → Secrets에 아래 4개 값을 추가하면 실전 키를 유지하면서 모의계좌를 함께 사용할 수 있습니다.')
-        st.code('KIS_DEMO_APP_KEY = "모의투자 전용 App Key"\nKIS_DEMO_APP_SECRET = "모의투자 전용 App Secret"\nKIS_DEMO_CANO = "모의계좌 앞 8자리"\nKIS_DEMO_ACNT_PRDT_CD = "모의계좌 뒤 2자리"',language='toml')
-        st.caption('실전용 키를 복사해 넣으면 연결되지 않습니다. 기존 KIS_ENV=demo 설정만 사용하는 경우 기존 키움 API 키 설정도 지원합니다.')
-        st.link_button('KIS Developers · 모의계좌 API 신청','https://openapi.kiwoom.com/')
+        st.code('키움_DEMO_APP_KEY = "모의투자 전용 App Key"\n키움_DEMO_APP_SECRET = "모의투자 전용 App Secret"\n키움_DEMO_CANO = "모의계좌 앞 8자리"\n키움_DEMO_ACNT_PRDT_CD = "모의계좌 뒤 2자리"',language='toml')
+        st.caption('실전용 키를 복사해 넣으면 연결되지 않습니다. 기존 키움_ENV=demo 설정만 사용하는 경우 기존 키움 API 키 설정도 지원합니다.')
+        st.link_button('키움 Developers · 모의계좌 API 신청','https://openapi.kiwoom.com/')
     if not password:
         st.warning('모의계좌 데이터 조회 전 APP_PASSWORD를 설정하세요.')
         st.stop()
@@ -360,7 +360,7 @@ if page=='모의투자':
     st.caption('모의계좌 설정됨 · 키와 계좌번호 원문은 표시하지 않습니다.')
     if st.button('모의계좌 연결 확인 · 잔고 새로고침',type='primary'):
         try:
-            with st.spinner('KIS 모의투자 서버에서 잔고를 조회합니다…'):
+            with st.spinner('키움 모의투자 서버에서 잔고를 조회합니다…'):
                 client=broker_client('demo')
                 snapshot=client.balance()
             if snapshot['mode']!='demo':raise BrokerError('모의계좌 환경을 확인하지 못했습니다.')
@@ -400,8 +400,8 @@ if page=='모의투자':
         else:
             activity=trade_daily_activity(daily_payload['fills'],day,incomplete=bool(daily_payload.get('skipped')))
             money=lambda v:f"{v:,.0f}원" if v is not None else '확인 보류'
-            st.html(f"<div class='pd-summary'><div><span>당일 매수금액</span><strong>{money(activity['buy'])}</strong><small>KIS 체결금액 기준 · 미제공 시 계산</small></div>"
-                f"<div><span>당일 매도금액</span><strong>{money(activity['sell'])}</strong><small>KIS 체결금액 기준 · 미제공 시 계산</small></div>"
+            st.html(f"<div class='pd-summary'><div><span>당일 매수금액</span><strong>{money(activity['buy'])}</strong><small>키움 체결금액 기준 · 미제공 시 계산</small></div>"
+                f"<div><span>당일 매도금액</span><strong>{money(activity['sell'])}</strong><small>키움 체결금액 기준 · 미제공 시 계산</small></div>"
                 f"<div><span>당일 총 매매금액</span><strong>{money(activity['amount'])}</strong><small>매수금액 + 매도금액</small></div></div>")
             rate=signed(activity['return_pct'],'%') if activity['return_pct'] is not None else '<strong>확인 보류</strong>'
             st.html(f"<div class='pd-holding'><div class='pd-holding-head'><div><small>당일 실현손익 · 계산치</small>{signed(activity['pnl'],'원')}</div>"
@@ -701,8 +701,8 @@ elif page=='투자 근거':
                 item=watch_fetch(code,provider,today);chart=[];chart_error=''
                 try:
                     settings=account_settings()
-                    if not all(settings[k] for k in ('key','secret','cano','product')):
-                        raise EvidenceError('시장 비교 차트는 KIS 시세 연결이 필요합니다.')
+                    if not all(settings[k] for k in ('key','secret')):
+                        raise EvidenceError('시장 비교 차트는 키움 시세 연결이 필요합니다.')
                     actual=item.get('benchmark')
                     if actual and actual!=market_name:
                         raise EvidenceError('종목 상장시장은 '+actual+'입니다. 비교 시장을 변경하세요.')
@@ -826,8 +826,8 @@ elif page=='연결 설정':
     ]
 
     connected=sum(bool(api_key(key)) for _,_,key,_,_ in api_specs)
-    kis_connected=all(account_settings()[k] for k in ('key','secret','cano','product'))
-    st.html(f"<div class='pd-summary'><div><span>공공 API</span><strong>{connected}/4</strong><small>필요한 항목만 연결</small></div><div><span>증권사 KIS</span><strong>{'연결됨' if kis_connected else '미연결'}</strong><small>현재 세션 전용</small></div><div><span>저장 방식</span><strong>세션 보호</strong><small>로그아웃 시 입력 키 삭제</small></div></div>")
+    kis_connected=all(account_settings()[k] for k in ('key','secret'))
+    st.html(f"<div class='pd-summary'><div><span>공공 API</span><strong>{connected}/4</strong><small>필요한 항목만 연결</small></div><div><span>증권사 키움</span><strong>{'연결됨' if kis_connected else '미연결'}</strong><small>현재 세션 전용</small></div><div><span>저장 방식</span><strong>세션 보호</strong><small>로그아웃 시 입력 키 삭제</small></div></div>")
 
     st.subheader('01 · 공공 데이터 API')
     st.caption('수강 중에는 아래에서 바로 입력할 수 있습니다. 장기 사용은 본인 Streamlit Secrets에 저장하면 매번 다시 입력할 필요가 없습니다.')
@@ -916,11 +916,11 @@ elif page=='매매 습관':
     habit_mode='real' if mode_label=='실전 계좌' else 'demo'
     settings=account_settings(habit_mode)
     if habit_mode=='real' and account_settings()['mode']!='real':
-        st.warning('실전 분석에는 KIS_ENV=real과 실전용 키움 API 키 설정이 필요합니다.')
+        st.warning('실전 분석에는 키움_ENV=real과 실전용 키움 API 키 설정이 필요합니다.')
         st.stop()
     st.html(f"<div class='pd-badges'><span class='pd-badge gold'>분석 대상 · {mode_label}</span></div>")
     st.caption(f'{mode_label}의 체결 기록 분석 · 미체결·취소 제외 · 현재 로그인 세션에 보관')
-    if not password or not all(settings[k] for k in ('key','secret','cano','product')):
+    if not password or not all(settings[k] for k in ('key','secret')):
         st.warning('대시보드 비밀번호와 선택한 계좌의 키움 API 키를 연결 설정에서 확인하세요.')
         st.stop()
     trade_key='habit_trade_'+habit_mode
@@ -1001,7 +1001,7 @@ elif page=='매매 습관':
 조회기간: {saved['range'][0]} ~ {saved['range'][1]}\n매수 체결: {sum(x['side']=='buy' for x in fills)}건, 매도 체결: {sum(x['side']=='sell' for x in fills)}건\n매수가 확인된 청산 묶음: {len(summary['closed'])}건, 조회 전 매수 미확인 매도: {len(summary['unmatched_sells'])}건\n이 집계만으로 고가 매수, 손절 실패, 실적 악화 종목 매수 또는 타이밍 실패를 단정하지 마세요.\n확인된 사실과 판단에 필요한 추가 자료를 나누고, 다음 거래에서 기록할 질문 한 가지를 제시하세요.\n종목 추천이나 매수·매도 지시는 하지 마세요.''',language='text')
     st.stop()
 else:
-    configured=all(account_settings()[k] for k in ('key','secret','cano','product'))
+    configured=all(account_settings()[k] for k in ('key','secret'))
     head,action=st.columns([4,1.2],vertical_alignment='center')
     with head:
         st.title('투자 대시보드' if page=='오늘의 점검' else '내 계좌 · 포트폴리오')
@@ -1070,7 +1070,7 @@ else:
                 move=('▲ 상승' if info['change']>0 else '▼ 하락' if info['change']<0 else '보합')
                 move_cls='pd-plus' if info['change']>0 else 'pd-minus' if info['change']<0 else 'pd-muted'
                 movement=f"<span class='pd-index-change'>전 거래일 대비 <b class='{move_cls}'>{move} {info['change']:+,.2f}p · {info['change_pct']:+.2f}%</b></span>"
-                pieces.append(f"<div><strong><span class='pd-lamp {color}'></span>{name} · {state}</strong><span class='pd-index-value'>{info['close']:,.2f}</span>{movement}<span class='details'>10일선 {info['ma10']:,.2f} · 20일선 {info['ma20']:,.2f}</span><small>일별 기준 {info['date']} · KIS 일별 종가</small></div>")
+                pieces.append(f"<div><strong><span class='pd-lamp {color}'></span>{name} · {state}</strong><span class='pd-index-value'>{info['close']:,.2f}</span>{movement}<span class='details'>10일선 {info['ma10']:,.2f} · 20일선 {info['ma20']:,.2f}</span><small>일별 기준 {info['date']} · 키움 일별 종가</small></div>")
             else:
                 reason=html.escape(market['failures'].get(name) or '20거래일 자료 부족 또는 기준일이 오래됐습니다.')
                 pieces.append(f"<div><strong>⚪ {name} · 판정 보류</strong><span class='details'>{reason}</span></div>")
@@ -1092,7 +1092,7 @@ else:
         if market.get('flow_errors'):
             with st.expander('시장 수급 조회 보류 · 원인 확인'):
                 for market_name,reason in market['flow_errors'].items():st.caption(f'{market_name} · {reason}')
-                st.caption('모의투자 서버에서 제공되지 않는 시세 API는 실전용 KIS 시세 연결이 필요할 수 있습니다. 실전 키를 모의 설정에 복사하지 마세요.')
+                st.caption('모의투자 서버에서 제공되지 않는 시세 API는 실전용 키움 시세 연결이 필요할 수 있습니다. 실전 키를 모의 설정에 복사하지 마세요.')
 
 
     if not password or not configured:
