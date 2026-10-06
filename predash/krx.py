@@ -1,4 +1,6 @@
-"""Optional KRX daily market activity with a resilient read-only fallback."""
+"""Optional KRX daily market activity with a resilient read-only cache fallback."""
+import csv
+import io
 import re
 from datetime import date,timedelta
 import requests
@@ -10,53 +12,61 @@ def _as_int(value, default=0):
     try:
         if value is None:return default
         text=str(value).replace(',','').strip()
-        if not text:return default
+        if not text or text=='-':return default
         return int(float(text))
     except (TypeError,ValueError):
         return default
 
-def _fdr_daily_activity(code,asof):
-    """Fallback to FinanceDataReader's KRX reader when OPEN API auth is unavailable."""
-    try:
-        import FinanceDataReader as fdr
-        start=(asof-timedelta(days=14)).isoformat()
-        end=(asof+timedelta(days=1)).isoformat()
-        frame=fdr.DataReader('KRX:'+code,start,end)
-        if frame is None or frame.empty:
-            raise ValueError('empty KRX frame')
-        frame=frame[frame.index.date<=asof]
-        if frame.empty:
-            raise ValueError('no row before asof')
-        row=frame.iloc[-1]
-        idx=frame.index[-1]
-        volume=_as_int(row.get('Volume'))
-        turnover=_as_int(row.get('Amount'))
-        cap=_as_int(row.get('MarCap'))
-        market=''
+def _cached_daily_activity(code,asof):
+    """Read the latest KRX daily listing cache without requiring an OPEN API key.
+
+    FinanceDataReader publishes a daily KRX listing cache on GitHub. We try recent
+    calendar days and skip holidays/empty market rows.
+    """
+    base='https://raw.githubusercontent.com/FinanceData/fdr_krx_data_cache/refs/heads/master/data/listing/krx'
+    last_error=None
+    for offset in range(14):
+        day=asof-timedelta(days=offset)
+        if day.weekday()>=5:
+            continue
+        url=f"{base}/{day.isoformat()}.csv"
         try:
-            listing=fdr.StockListing('KRX')
-            if listing is not None and not listing.empty:
-                code_col='Code' if 'Code' in listing.columns else 'Symbol' if 'Symbol' in listing.columns else None
-                if code_col:
-                    hit=listing[listing[code_col].astype(str).str.zfill(6)==code]
-                    if not hit.empty:
-                        raw=str(hit.iloc[0].get('Market') or '').upper()
-                        market='코스피' if 'KOSPI' in raw else '코스닥' if 'KOSDAQ' in raw else raw
-        except Exception:
-            market=''
-        return {
-            'date':idx.date().isoformat(),'volume':volume,'turnover':turnover,'market_cap':cap,
-            'market':market or 'KRX','source':'FinanceDataReader · KRX 원천 보조조회','fallback':True
-        }
-    except Exception as exc:
-        raise KRXError('KRX 보조 시세 조회에도 실패했습니다.') from exc
+            r=requests.get(url,timeout=(5,15),headers={'User-Agent':'PreDash-Classroom/1.0'})
+            if r.status_code==404:
+                continue
+            r.raise_for_status()
+            text=r.text.lstrip('\ufeff')
+            reader=csv.DictReader(io.StringIO(text))
+            for row in reader:
+                row_code=str(row.get('Code','')).strip().zfill(6)
+                if row_code!=code:
+                    continue
+                close=_as_int(row.get('Close'))
+                volume=_as_int(row.get('Volume'))
+                turnover=_as_int(row.get('Amount'))
+                cap=_as_int(row.get('Marcap'))
+                # Holiday/cache placeholder files can contain "-" and zero market data.
+                if close<=0 or (volume<=0 and turnover<=0 and cap<=0):
+                    break
+                market_raw=str(row.get('Market') or row.get('MarketId') or '').upper()
+                market='코스피' if ('KOSPI' in market_raw or market_raw=='STK') else '코스닥' if ('KOSDAQ' in market_raw or market_raw=='KSQ') else market_raw or 'KRX'
+                return {
+                    'date':day.isoformat(),'volume':volume,'turnover':turnover,'market_cap':cap,
+                    'market':market,'source':'KRX 일별 캐시 · FinanceDataReader','fallback':True
+                }
+        except requests.RequestException as exc:
+            last_error=exc
+            continue
+        except (csv.Error,UnicodeError) as exc:
+            last_error=exc
+            continue
+    raise KRXError('KRX 보조 일별 캐시에서도 최근 거래일 자료를 찾지 못했습니다.') from last_error
 
 def daily_activity(key,code,asof=None):
     """Latest validated KOSPI/KOSDAQ daily record.
 
-    KRX OPEN API is preferred when an authorized key is available. If the key is
-    missing/rejected or the API is temporarily unavailable, a read-only KRX data
-    fallback keeps the dashboard usable.
+    KRX OPEN API is preferred. If its key is rejected or the endpoint is unavailable,
+    the dashboard falls back to the public daily KRX cache so watchlists keep working.
     """
     if not re.fullmatch(r'[0-9]{6}',str(code or '')):
         raise KRXError('종목코드를 확인하세요.')
@@ -66,18 +76,21 @@ def daily_activity(key,code,asof=None):
         for offset in range(6):
             day=asof-timedelta(days=offset)
             if day.weekday()>=5:continue
+            rejected=False
             for api in ('stk_bydd_trd','ksq_bydd_trd'):
                 try:
                     response=requests.get(f'https://data-dbg.krx.co.kr/svc/apis/sto/{api}',
                         headers={'AUTH_KEY':key},params={'basDd':day.strftime('%Y%m%d')},timeout=(5,12))
                     if response.status_code in (401,403):
                         official_error=f'KRX OPEN API HTTP {response.status_code}'
+                        rejected=True
                         break
                     response.raise_for_status()
                     rows=response.json().get('OutBlock_1')
                     if not isinstance(rows,list):
-                        raise KRXError('KRX 응답 형식을 확인하지 못했습니다.')
-                except (requests.RequestException,ValueError,KRXError) as exc:
+                        official_error='KRX OPEN API 응답 형식 오류'
+                        continue
+                except (requests.RequestException,ValueError) as exc:
                     official_error=str(exc) or exc.__class__.__name__
                     continue
                 for row in rows:
@@ -94,10 +107,10 @@ def daily_activity(key,code,asof=None):
                     return {'date':day.isoformat(),'volume':volume,'turnover':turnover,'market_cap':cap,
                             'market':'코스피' if api=='stk_bydd_trd' else '코스닥',
                             'source':'KRX OPEN API','fallback':False}
-            if official_error and ('401' in official_error or '403' in official_error):
+            if rejected:
                 break
     try:
-        result=_fdr_daily_activity(code,asof)
+        result=_cached_daily_activity(code,asof)
         if official_error:result['official_error']=official_error
         return result
     except KRXError as exc:
