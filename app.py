@@ -182,37 +182,192 @@ def api_key_source(name):
     return '미연결'
 
 
+def _diagnostic_result(status,detail,action='',evidence=''):
+    return {'status':status,'detail':detail,'action':action,'evidence':evidence}
+
+def _response_text(r):
+    """Return a short, non-secret response excerpt for classification only."""
+    try:
+        text=(r.text or '').strip()
+    except Exception:
+        text=''
+    return re.sub(r'\\s+',' ',text)[:1800]
+
+def _classify_gateway_failure(provider,r,*,code='',message=''):
+    """Classify authentication/service failures without exposing credentials."""
+    http=int(getattr(r,'status_code',0) or 0)
+    raw=' '.join(filter(None,[str(code),str(message),_response_text(r)])).upper()
+
+    if any(token in raw for token in (
+        'SERVICE_KEY_IS_NOT_REGISTERED_ERROR','INVALID SERVICE KEY','INVALID_KEY',
+        'UNREGISTERED','등록되지 않은','인증키가 유효하지','INVALID AUTH','AUTH_KEY INVALID'
+    )):
+        return _diagnostic_result('키 오류','발급키가 등록되지 않았거나 현재 값이 유효하지 않습니다.',
+            '발급기관에서 인증키를 다시 복사해 Streamlit Secrets의 해당 키 값을 교체하세요.',
+            f'HTTP {http}' + (f' · 코드 {code}' if code else ''))
+
+    if any(token in raw for token in (
+        'DEADLINE_HAS_EXPIRED_ERROR','EXPIRED','EXPIRATION','만료','사용기간'
+    )):
+        return _diagnostic_result('만료','인증키 또는 서비스 사용기간이 만료된 응답입니다.',
+            '발급기관에서 키/서비스 사용기간을 연장하거나 새 키를 발급받아 교체하세요.',
+            f'HTTP {http}' + (f' · 코드 {code}' if code else ''))
+
+    if any(token in raw for token in (
+        'NO_OPENAPI_SERVICE_ERROR','NO OPENAPI SERVICE','NOT FOUND SERVICE',
+        'SERVICE NOT FOUND','존재하지 않는 서비스','폐기','잘못된 URL'
+    )) or http==404:
+        return _diagnostic_result('잘못된 URL','현재 호출 주소가 승인된 서비스 주소와 맞지 않거나 폐기된 경로입니다.',
+            '발급기관의 활용신청 상세에서 현재 승인된 요청주소를 확인한 뒤 앱의 endpoint를 맞추세요.',
+            f'HTTP {http}' + (f' · 코드 {code}' if code else ''))
+
+    if any(token in raw for token in (
+        'IP','WHITELIST','허용되지 않은 IP','IP 제한','접속 IP','NOT ALLOWED IP'
+    )):
+        return _diagnostic_result('IP 제한','현재 Streamlit 서버의 접속 IP가 허용되지 않은 것으로 보입니다.',
+            '발급기관의 IP 제한 설정을 해제하거나 서버형 서비스 사용 가능 여부를 확인하세요.',
+            f'HTTP {http}' + (f' · 코드 {code}' if code else ''))
+
+    if any(token in raw for token in (
+        'SERVICE_ACCESS_DENIED_ERROR','PERMISSION_DENIED','ACCESS DENIED',
+        'NOT AUTHORIZED','UNAUTHORIZED SERVICE','활용승인','접근권한','권한이 없습니다'
+    )):
+        return _diagnostic_result('서비스 미승인','키는 전달됐지만 이 API 서비스 사용 권한이 승인되지 않은 응답입니다.',
+            '발급기관에서 현재 사용하는 정확한 API 서비스의 활용신청 상태가 승인인지 확인하세요.',
+            f'HTTP {http}' + (f' · 코드 {code}' if code else ''))
+
+    if any(token in raw for token in (
+        'LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR','RATE LIMIT','TOO MANY REQUESTS','호출 한도'
+    )) or http==429:
+        return _diagnostic_result('호출 한도','현재 API 호출 한도 또는 속도 제한에 걸렸습니다.',
+            '잠시 후 다시 진단하고, 반복되면 일/분당 호출 한도를 확인하세요.',
+            f'HTTP {http}' + (f' · 코드 {code}' if code else ''))
+
+    if http==401:
+        return _diagnostic_result('키 오류',f'{provider}가 HTTP 401을 반환했습니다. 인증키가 인식되지 않은 상태입니다.',
+            '인증키 원문을 다시 복사해 저장하고, 키 활성/승인 상태를 확인하세요. 공백·따옴표가 값에 포함되지 않게 하세요.',
+            'HTTP 401')
+    if http==403:
+        return _diagnostic_result('서비스 미승인',f'{provider}가 HTTP 403을 반환했습니다. 키는 전송됐지만 접근이 거절됐습니다.',
+            '서비스 활용승인 상태를 먼저 확인하고, 승인 상태라면 IP 제한/서비스별 권한을 확인하세요.',
+            'HTTP 403')
+    if http>=500:
+        return _diagnostic_result('서버 오류',f'{provider} 서버가 HTTP {http} 오류를 반환했습니다.',
+            '키를 변경하지 말고 잠시 후 다시 진단하세요.',f'HTTP {http}')
+    if http>=400:
+        return _diagnostic_result('요청 오류',f'{provider}가 HTTP {http}을 반환했습니다.',
+            '요청주소와 필수 파라미터를 확인하세요.',f'HTTP {http}')
+    return _diagnostic_result('인증 실패',f'{provider}가 정상 인증 응답을 반환하지 않았습니다.',
+        '발급기관의 키 상태와 해당 서비스 활용승인을 확인하세요.',
+        (f'HTTP {http}' if http else '') + (f' · 코드 {code}' if code else ''))
+
 def diagnose_public_api(label,key_name):
     key=api_key(key_name)
-    if not key:return {'status':'미연결','detail':'API 키가 설정되지 않았습니다.'}
+    if not key:
+        return _diagnostic_result('미연결','API 키가 설정되지 않았습니다.','API 키를 입력하거나 Streamlit Secrets에 저장하세요.')
+
     try:
         if key_name=='DART_CRTFC_KEY':
-            r=requests.get('https://opendart.fss.or.kr/api/company.json',params={'crtfc_key':key,'corp_code':'00126380'},timeout=(5,12))
-            data=r.json();code=str(data.get('status',''))
-            return {'status':'정상','detail':'실제 OpenDART 인증·응답 성공'} if r.ok and code=='000' else {'status':'인증 실패','detail':f'OpenDART 응답코드 {code or r.status_code}'}
+            r=requests.get('https://opendart.fss.or.kr/api/company.json',
+                params={'crtfc_key':key,'corp_code':'00126380'},timeout=(5,15))
+            try:data=r.json()
+            except ValueError:data={}
+            code=str(data.get('status',''))
+            message=str(data.get('message',''))
+            if r.ok and code=='000':
+                return _diagnostic_result('정상','실제 OpenDART 인증·기업개황 응답에 성공했습니다.','','DART status 000')
+            dart_map={
+                '010':('키 오류','등록되지 않은 DART 인증키입니다.','OpenDART 인증키 관리에서 키를 다시 확인하고 Secrets 값을 교체하세요.'),
+                '011':('키 오류','DART 인증키가 사용 중지 상태입니다.','OpenDART에서 키 활성 상태를 확인하세요.'),
+                '012':('IP 제한','DART가 현재 서버 IP 접속을 허용하지 않았습니다.','OpenDART 인증키의 IP 제한 설정을 확인하세요.'),
+                '020':('호출 한도','DART 호출 한도를 초과했습니다.','호출을 줄이고 한도 초기화 후 다시 진단하세요.'),
+                '100':('요청 오류','DART가 요청 조건 오류를 반환했습니다.','앱의 DART 진단 요청 파라미터를 점검하세요.'),
+                '800':('서버 오류','DART 시스템 점검/장애 응답입니다.','키를 변경하지 말고 잠시 후 다시 진단하세요.'),
+                '901':('만료','DART 계정/개인정보 보유기간 관련 만료 응답입니다.','OpenDART 계정 상태를 확인하고 필요한 갱신 절차를 완료하세요.'),
+            }
+            if code in dart_map:
+                stt,detail,action=dart_map[code]
+                return _diagnostic_result(stt,detail,action,f'DART status {code}')
+            return _classify_gateway_failure('OpenDART',r,code=code,message=message)
+
         if key_name=='DATA_GO_KR_SERVICE_KEY':
-            for url in ('https://apis.data.go.kr/1160100/GetStockSecuritiesInfoService_V2/getStockPriceInfo_V2','https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo'):
-                r=requests.get(url,params={'serviceKey':key,'resultType':'json','numOfRows':1,'pageNo':1},timeout=(5,12))
+            urls=(
+                'https://apis.data.go.kr/1160100/GetStockSecuritiesInfoService_V2/getStockPriceInfo_V2',
+                'https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo',
+            )
+            failures=[]
+            for url in urls:
+                r=requests.get(url,params={'serviceKey':key,'resultType':'json','numOfRows':1,'pageNo':1},timeout=(5,15))
+                code='';message=''
                 try:
-                    h=r.json().get('response',{}).get('header',{});code=str(h.get('resultCode',''))
-                    if r.ok and code in ('00','0','000'):return {'status':'정상','detail':'실제 금융위원회 주식시세 API 응답 성공'}
-                except ValueError:pass
-            return {'status':'인증 실패','detail':'금융위원회 주식시세 API 응답 실패'}
+                    payload=r.json()
+                    h=payload.get('response',{}).get('header',{})
+                    code=str(h.get('resultCode',''))
+                    message=str(h.get('resultMsg','') or h.get('returnAuthMsg',''))
+                except ValueError:
+                    body=_response_text(r)
+                    m=re.search(r'<(?:returnReasonCode|resultCode)>([^<]+)',body,re.I)
+                    code=m.group(1) if m else ''
+                    m=re.search(r'<(?:returnAuthMsg|resultMsg|errMsg)>([^<]+)',body,re.I)
+                    message=m.group(1) if m else body
+                if r.ok and code in ('00','0','000'):
+                    return _diagnostic_result('정상','실제 금융위원회 주식시세 API 응답에 성공했습니다.','','resultCode '+code)
+                failures.append(_classify_gateway_failure('공공데이터 주식시세',r,code=code,message=message))
+            priority=['키 오류','만료','IP 제한','서비스 미승인','잘못된 URL','호출 한도','서버 오류','요청 오류','인증 실패']
+            for state in priority:
+                found=next((x for x in failures if x['status']==state),None)
+                if found:return found
+            return failures[-1] if failures else _diagnostic_result('인증 실패','공공데이터 주식시세 응답을 확인하지 못했습니다.')
+
         if key_name=='KRX_AUTH_KEY':
-            day=(datetime.now(ZoneInfo('Asia/Seoul')).date()-timedelta(days=1))
-            r=requests.get('https://data-dbg.krx.co.kr/svc/apis/sto/stk_bydd_trd',headers={'AUTH_KEY':key},params={'basDd':day.strftime('%Y%m%d')},timeout=(5,12))
-            try:rows=r.json().get('OutBlock_1')
-            except ValueError:rows=None
-            return {'status':'정상','detail':'실제 KRX 일별 거래정보 응답 성공'} if r.ok and isinstance(rows,list) else {'status':'인증 실패','detail':f'KRX 응답 HTTP {r.status_code}'}
+            today=datetime.now(ZoneInfo('Asia/Seoul')).date()
+            day=today-timedelta(days=1)
+            while day.weekday()>=5:day-=timedelta(days=1)
+            r=requests.get('https://data-dbg.krx.co.kr/svc/apis/sto/stk_bydd_trd',
+                headers={'AUTH_KEY':key},params={'basDd':day.strftime('%Y%m%d')},timeout=(5,15))
+            code='';message=''
+            try:
+                data=r.json();rows=data.get('OutBlock_1')
+                code=str(data.get('resultCode') or data.get('code') or '')
+                message=str(data.get('resultMsg') or data.get('message') or data.get('msg') or '')
+            except ValueError:
+                rows=None;message=_response_text(r)
+            if r.ok and isinstance(rows,list):
+                return _diagnostic_result('정상','실제 KRX 일별 거래정보 응답에 성공했습니다.','','HTTP 200 · OutBlock_1')
+            return _classify_gateway_failure('KRX',r,code=code,message=message)
+
         if key_name=='CUSTOMS_API_KEY':
             end=(datetime.now()-timedelta(days=35)).strftime('%Y%m')
-            r=requests.get('https://apis.data.go.kr/1220000/nitemtrade/getNitemtradeList',params={'serviceKey':key,'strtYymm':end,'endYymm':end,'hsSgn':'8504','cntyCd':'US'},timeout=(5,15))
-            ok=r.ok and ('<resultCode>00</resultCode>' in r.text[:800] or '"resultCode":"00"' in r.text[:800])
-            return {'status':'정상','detail':'실제 관세청 수출입 API 응답 성공'} if ok else {'status':'인증 실패','detail':f'관세청 응답 HTTP {r.status_code}'}
-        return {'status':'오류','detail':'진단 미구현'}
-    except requests.Timeout:return {'status':'오류','detail':'응답 시간 초과'}
-    except requests.RequestException:return {'status':'오류','detail':'기관 서버 연결 실패'}
-    except Exception:return {'status':'오류','detail':'응답 형식을 확인하지 못했습니다.'}
+            r=requests.get('https://apis.data.go.kr/1220000/nitemtrade/getNitemtradeList',
+                params={'serviceKey':key,'strtYymm':end,'endYymm':end,'hsSgn':'8504','cntyCd':'US'},timeout=(5,18))
+            body=_response_text(r)
+            code='';message=''
+            try:
+                data=r.json()
+                header=data.get('response',{}).get('header',{}) if isinstance(data,dict) else {}
+                code=str(header.get('resultCode',''));message=str(header.get('resultMsg',''))
+            except ValueError:
+                m=re.search(r'<(?:returnReasonCode|resultCode)>([^<]+)',body,re.I)
+                code=m.group(1) if m else ''
+                m=re.search(r'<(?:returnAuthMsg|resultMsg|errMsg)>([^<]+)',body,re.I)
+                message=m.group(1) if m else body
+            if r.ok and (code in ('00','0','000') or '<resultCode>00</resultCode>' in body):
+                return _diagnostic_result('정상','실제 관세청 수출입 API 응답에 성공했습니다.','','resultCode '+(code or '00'))
+            return _classify_gateway_failure('관세청',r,code=code,message=message)
+
+        return _diagnostic_result('오류','진단 미구현','앱 진단 코드를 확인하세요.')
+    except requests.Timeout:
+        return _diagnostic_result('응답 지연','기관 서버가 제한시간 안에 응답하지 않았습니다.',
+            '키 오류로 확정하지 않습니다. 잠시 후 다시 진단하세요. 반복되면 기관 서버 상태를 확인하세요.')
+    except requests.exceptions.SSLError:
+        return _diagnostic_result('서버 오류','TLS/보안 연결에 실패했습니다.','기관 서버 또는 실행환경의 TLS 상태를 확인하세요.')
+    except requests.ConnectionError:
+        return _diagnostic_result('서버 오류','기관 서버에 연결하지 못했습니다.','네트워크·DNS·기관 서버 상태를 확인하세요.')
+    except requests.RequestException as exc:
+        return _diagnostic_result('서버 오류','기관 서버 요청 전송에 실패했습니다.','잠시 후 다시 진단하세요.',exc.__class__.__name__)
+    except Exception as exc:
+        return _diagnostic_result('응답 형식 오류','응답을 안전하게 분류하지 못했습니다.',
+            '진단 로그의 예외 종류를 확인해 파서를 보완하세요.',exc.__class__.__name__)
 
 def broker_client(mode=None):
     """Reuse the short-lived Kiwoom access token across Streamlit reruns in this session."""
@@ -936,7 +1091,10 @@ elif page=='연결 설정':
         result=st.session_state.get('public_api_diagnostics',{}).get(key)
         if not result:continue
         msg=f"{label} · {result['status']} · {result['detail']}"
-        (st.success if result['status']=='정상' else st.info if result['status']=='미연결' else st.error)(msg)
+        renderer=st.success if result['status']=='정상' else st.info if result['status'] in ('미연결','응답 지연','호출 한도') else st.error
+        renderer(msg)
+        if result.get('evidence'):st.caption('판정 근거 · '+result['evidence'])
+        if result.get('action'):st.caption('해결 방법 · '+result['action'])
 
     links=st.columns(4)
     for col,(label,desc,key,url,feature) in zip(links,api_specs):
