@@ -14,7 +14,7 @@ from streamlit_js_eval import streamlit_js_eval
 import predash.kiwoom as broker_module
 Kiwoom, BrokerError = broker_module.Kiwoom, broker_module.BrokerError
 from predash.classroom import account_settings, connection_form
-from predash.macro import fetch_vix,relative,benchmark,MacroError
+from predash.macro import fetch_vix,relative,benchmark,public_index_bars,MacroError
 from predash.analysis import review
 from predash.health import status as holding_status
 from predash.official import Official, DataError
@@ -507,9 +507,10 @@ def stock_evidence_charts(item):
         if history:
             chart=[{'날짜':r['date'],**{label:r['cumulative'][k] for label,k in [('외국인','foreign'),('기관','institution'),('개인','individual')]}} for r in history]
             st.line_chart(chart,x='날짜',y=['외국인','기관','개인'],height=300,color=['#b63f3f','#214b3a','#527dad'])
-            st.caption(f"키움 · {history[0]['date']}~{history[-1]['date']} · {len(history)}거래 관측일 · 누적 순매수 수량(주), 보유량 아님 · 시작일 직전 누적=0")
+            flow_source=(item.get('flow') or {}).get('source','키움증권')
+            st.caption(f"{flow_source} · {history[0]['date']}~{history[-1]['date']} · {len(history)}거래 관측일 · 누적 순매수 수량(주), 보유량 아님 · 시작일 직전 누적=0")
             st.dataframe([{'투자자':label,'누적 순매수(주)':history[-1]['cumulative'][k]} for label,k in [('외국인','foreign'),('기관','institution'),('개인','individual')]],hide_index=True,use_container_width=True)
-        else:st.info('근거 자료 새로고침으로 수급을 조회하세요. 키움 연결이 필요합니다.')
+        else:st.info('근거 자료 새로고침으로 수급을 조회하세요. 키움 연결이 없으면 KRX 공개자료 보조조회를 시도합니다.')
 
 def watch_fetch(code,provider,today):
     result={'code':code,'name':st.session_state.get('watch_names',{}).get(code,code),'lamp':None,'metrics':None,'flow':None,'krx':None,'report':None,'errors':{},
@@ -537,9 +538,22 @@ def watch_fetch(code,provider,today):
                 'url':'https://dart.fss.or.kr/dsaf001/main.do?rcpNo='+row['rcept_no']}
                 for row in (notices or {}).get('list',[])]}
         except DataError as exc:result['errors']['report']=str(exc)
+    broker_flow_error=None
     if all(account_settings()[k] for k in ('key','secret')):
-        try:result['flow']=broker_client().investor_flow(code)
-        except BrokerError as exc:result['errors']['flow']=str(exc)
+        try:
+            result['flow']=broker_client().investor_flow(code)
+            if result['flow']:
+                result['flow']['source']='키움증권 REST API'
+                result['flow']['fallback']=False
+        except BrokerError as exc:
+            broker_flow_error=str(exc)
+    if not result.get('flow'):
+        try:
+            result['flow']=flow_module.public_investor_flow(code,today)
+            if broker_flow_error:
+                result['errors']['flow_broker']=broker_flow_error
+        except ValueError as exc:
+            result['errors']['flow']=broker_flow_error or str(exc)
     try:
         result['krx']=daily_activity(api_key('KRX_AUTH_KEY'),code,today)
     except KRXError as exc:
@@ -550,9 +564,18 @@ def watch_fetch(code,provider,today):
             cache='relative_index_'+market_code
             cached=st.session_state.get(cache,{})
             if cached.get('date')!=result['fetched']:
-                cached={'date':result['fetched'],'rows':broker_client().index_bars(market_code)}
+                rows=None;source=''
+                if all(account_settings()[k] for k in ('key','secret')):
+                    try:
+                        rows=broker_client().index_bars(market_code);source='키움증권'
+                    except BrokerError as exc:
+                        result['errors']['relative_broker']=str(exc)
+                if not rows:
+                    rows=public_index_bars(market_code,today);source='공개 지수 보조조회'
+                cached={'date':result['fetched'],'rows':rows,'source':source}
                 st.session_state[cache]=cached
             result['relative']=relative(result['price_rows'],cached['rows'],code,today)
+            result['relative_source']=cached.get('source','')
         except (BrokerError,MacroError) as exc:result['errors']['relative']=str(exc)
     return result
 
@@ -991,15 +1014,17 @@ elif page=='투자 근거':
             with st.spinner('공식 시세·실적·수급과 비교 시장을 조회합니다…'):
                 item=watch_fetch(code,provider,today);chart=[];chart_error=''
                 try:
-                    settings=account_settings()
-                    if not all(settings[k] for k in ('key','secret')):
-                        raise EvidenceError('시장 비교 차트는 키움 시세 연결이 필요합니다.')
                     actual=item.get('benchmark')
                     if actual and actual!=market_name:
                         raise EvidenceError('종목 상장시장은 '+actual+'입니다. 비교 시장을 변경하세요.')
-                    chart=comparison(provider.price_history(code,today),
-                        broker_client().index_bars('0001' if market_name=='코스피' else '1001'),code,today)
-                except (BrokerError,DataError,EvidenceError) as exc:chart_error=str(exc)
+                    market_code='0001' if market_name=='코스피' else '1001'
+                    index_rows=None
+                    if all(account_settings()[k] for k in ('key','secret')):
+                        try:index_rows=broker_client().index_bars(market_code)
+                        except BrokerError:pass
+                    if not index_rows:index_rows=public_index_bars(market_code,today)
+                    chart=comparison(provider.price_history(code,today),index_rows,code,today)
+                except (BrokerError,DataError,EvidenceError,MacroError) as exc:chart_error=str(exc)
             st.session_state[cache_key]={'item':item,'chart':chart,'chart_error':chart_error}
             if code in saved_codes:
                 if 'watch_results' not in st.session_state:st.session_state.watch_results={}
@@ -1037,7 +1062,7 @@ elif page=='투자 근거':
             c.metric('시장 대비 차이',f"{last['stock']-last['market']:+.1f}%p")
             chart=[{'날짜':r['date'],'종목':r['stock'],market_name:r['market']} for r in data['chart']]
             st.line_chart(chart,x='날짜',y=['종목',market_name],height=250,color=['#214b3a','#a68137'])
-            st.caption(f"공통 거래일 {len(chart)}일 · {chart[0]['날짜']}=100 · {chart[-1]['날짜']}까지 · 종목: 공공데이터포털 / 시장: 키움 · 배당 미포함 가격 변화")
+            st.caption(f"공통 거래일 {len(chart)}일 · {chart[0]['날짜']}=100 · {chart[-1]['날짜']}까지 · 종목: 공공데이터포털 / 시장: 키움 우선·공개지수 보조조회 · 배당 미포함 가격 변화")
         else:st.info(data['chart_error'] or '공통 비교 시세 부족')
         if lamp:st.html(f"<div class='pd-badge'>종가 {lamp['close']:,.0f}원 · {lamp['state']} · 10일선 {lamp['ma10']:,.0f} / 20일선 {lamp['ma20']:,.0f} · {lamp['date']}</div>")
     with right:
