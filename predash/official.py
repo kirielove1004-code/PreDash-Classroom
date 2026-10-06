@@ -188,6 +188,29 @@ class Official:
         except (zipfile.BadZipFile, ElementTree.ParseError, KeyError, ValueError):
             raise DataError("DART 기업 목록 응답을 해석하지 못했습니다.") from None
 
+    def _fdr_listing(self):
+        """Unauthenticated fallback for ticker/name lookup when public APIs are unavailable."""
+        try:
+            import FinanceDataReader as fdr
+            frame=fdr.StockListing('KRX')
+        except Exception as exc:
+            raise DataError("보조 종목목록 조회도 실패했습니다.") from exc
+        if frame is None or getattr(frame,'empty',True):
+            raise DataError("보조 종목목록이 비어 있습니다.")
+        code_col='Code' if 'Code' in frame.columns else 'Symbol' if 'Symbol' in frame.columns else None
+        name_col='Name' if 'Name' in frame.columns else None
+        if not code_col or not name_col:
+            raise DataError("보조 종목목록 형식을 확인하지 못했습니다.")
+        names={}
+        for _,row in frame.iterrows():
+            code=str(row.get(code_col,'')).strip().replace('.0','').zfill(6)
+            name=str(row.get(name_col,'')).strip()
+            if re.fullmatch(r"[0-9A-Z]{6}",code) and name:
+                names[code]=name
+        if not names:
+            raise DataError("보조 종목목록에 종목이 없습니다.")
+        return names
+
     def _load_krx_names(self):
         """Load KOSPI/KOSDAQ official stock master as a search fallback."""
         if self.krx_names is not None:
@@ -249,6 +272,10 @@ class Official:
             sources.append(self._load_krx_names())
         except DataError:
             pass
+        try:
+            sources.append(self._fdr_listing())
+        except DataError:
+            pass
         merged={}
         for source in sources:
             for code,name in source.items():
@@ -295,43 +322,80 @@ class Official:
         return []
 
     def price(self, code, asof):
-        for days in range(10):
-            target = (asof - timedelta(days=days)).strftime("%Y%m%d")
-            try:
-                payload = data_go_request({"resultType": "json", "numOfRows": 100,"basDt": target, "likeSrtnCd": code}, self.price_key_raw).json()
-                response = payload["response"]
-                if str(response["header"].get("resultCode")) not in ("00", "0"):
-                    raise DataError("시세 API 승인·인증 오류")
-                items = (response.get("body", {}).get("items") or {}).get("item", [])
-                if isinstance(items, dict):
-                    items = [items]
-                for row in items:
-                    if str(row.get("srtnCd", "")).removeprefix("A").zfill(6) == code:
-                        price = number(row.get("clpr"))
-                        if price is not None and price > 0:
-                            self.price_rows[(code, asof.isoformat())] = row
-                            return price, row["basDt"], row["itmsNm"]
-            except (ValueError, KeyError, TypeError):
-                raise DataError("시세 응답 형식 오류") from None
-        raise DataError("최근 10일 안에 시세가 없습니다.")
+        public_error=None
+        if self.price_key_raw:
+            for days in range(10):
+                target = (asof - timedelta(days=days)).strftime("%Y%m%d")
+                try:
+                    payload = data_go_request({"resultType": "json", "numOfRows": 100,"basDt": target, "likeSrtnCd": code}, self.price_key_raw).json()
+                    response = payload["response"]
+                    if str(response["header"].get("resultCode")) not in ("00", "0"):
+                        raise DataError("시세 API 승인·인증 오류")
+                    items = (response.get("body", {}).get("items") or {}).get("item", [])
+                    if isinstance(items, dict):
+                        items = [items]
+                    for row in items:
+                        if str(row.get("srtnCd", "")).removeprefix("A").zfill(6) == code:
+                            price = number(row.get("clpr"))
+                            if price is not None and price > 0:
+                                self.price_rows[(code, asof.isoformat())] = row
+                                return price, row["basDt"], row["itmsNm"]
+                except DataError as exc:
+                    public_error=exc
+                    break
+                except (ValueError, KeyError, TypeError):
+                    public_error=DataError("시세 응답 형식 오류")
+                    break
+        # Keep 관심종목 usable even while the government stock-price API is not authorized.
+        try:
+            import FinanceDataReader as fdr
+            start=(asof-timedelta(days=14)).isoformat()
+            end=(asof+timedelta(days=1)).isoformat()
+            frame=fdr.DataReader(code,start,end)
+            if frame is not None and not frame.empty:
+                row=frame.iloc[-1]
+                day=frame.index[-1].strftime("%Y%m%d")
+                close=int(round(float(row["Close"])))
+                names=self._fdr_listing()
+                name=names.get(code,code)
+                self.price_rows[(code, asof.isoformat())]={"clpr":close,"basDt":day,"itmsNm":name}
+                return close,day,name
+        except Exception:
+            pass
+        if public_error:
+            raise public_error
+        raise DataError("최근 시세를 불러오지 못했습니다.")
 
     def price_history(self, code, asof):
-        """Fetch enough dated daily closes for the 10/20-session lamp in one request."""
+        """Fetch enough dated daily closes for the 10/20-session lamp."""
         if not re.fullmatch(r"[0-9]{6}",code):
             raise DataError("종목코드는 숫자 6자리여야 합니다.")
-        params={"serviceKey":self.price_key,"resultType":"json","numOfRows":100,
-                "likeSrtnCd":code,"beginBasDt":(asof-timedelta(days=50)).strftime('%Y%m%d'),
-                "endBasDt":(asof+timedelta(days=1)).strftime('%Y%m%d')}
+        if self.price_key_raw:
+            params={"serviceKey":self.price_key,"resultType":"json","numOfRows":100,
+                    "likeSrtnCd":code,"beginBasDt":(asof-timedelta(days=50)).strftime('%Y%m%d'),
+                    "endBasDt":(asof+timedelta(days=1)).strftime('%Y%m%d')}
+            try:
+                response=data_go_request({k:v for k,v in params.items() if k!='serviceKey'},self.price_key_raw).json()["response"]
+                if str(response['header'].get('resultCode')) not in ('00','0'):
+                    raise DataError("공공데이터포털 일별 시세 승인·인증 오류")
+                items=(response.get('body',{}).get('items') or {}).get('item',[])
+                if isinstance(items,dict):items=[items]
+                if isinstance(items,list) and items:return items
+            except Exception:
+                pass
         try:
-            response=data_go_request({k:v for k,v in params.items() if k!='serviceKey'},self.price_key_raw).json()["response"]
-            if str(response['header'].get('resultCode')) not in ('00','0'):
-                raise DataError("공공데이터포털 일별 시세 승인·인증 오류")
-            items=(response.get('body',{}).get('items') or {}).get('item',[])
-            if isinstance(items,dict):items=[items]
-            if not isinstance(items,list):raise ValueError
-            return items
-        except (ValueError,KeyError,TypeError):
-            raise DataError("공공데이터포털 일별 시세 응답을 읽지 못했습니다.") from None
+            import FinanceDataReader as fdr
+            frame=fdr.DataReader(code,(asof-timedelta(days=60)).isoformat(),(asof+timedelta(days=1)).isoformat())
+            if frame is None or frame.empty:
+                raise ValueError
+            out=[]
+            for idx,row in frame.iterrows():
+                out.append({"basDt":idx.strftime("%Y%m%d"),"clpr":str(int(round(float(row["Close"])))),
+                            "hipr":str(int(round(float(row.get("High",row["Close"]))))),
+                            "lopr":str(int(round(float(row.get("Low",row["Close"])))) )})
+            return out
+        except Exception:
+            raise DataError("일별 시세를 불러오지 못했습니다.") from None
 
     def annual(self, corp, year, basis):
         cache_key = (corp, year, basis)
