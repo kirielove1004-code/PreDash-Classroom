@@ -1,5 +1,6 @@
 """Classroom credentials are held only in the current Streamlit session."""
 import os
+import requests
 import streamlit as st
 from predash.kiwoom import Kiwoom, BrokerError
 
@@ -52,8 +53,22 @@ def connection_form():
                     st.session_state['_kiwoom_client_demo' if active=='demo' else '_kiwoom_client']=client
                     st.success('키움증권 연결 정상 · 계좌·보유종목·체결내역·수급 조회를 사용할 수 있습니다.')
                 except BrokerError as error:
-                    st.error(str(error))
-                    st.caption('8001 계열 오류면 실전/모의 키 구분과 App Key·App Secret 쌍을 다시 확인하세요.')
+                    message=str(error)
+                    if '8050' in message or '8040' in message or '8010' in message or '8103' in message:
+                        st.error('키움 단말기/IP 인증이 필요합니다 · '+message)
+                        try:
+                            ip_resp=requests.get('https://api.ipify.org',params={'format':'json'},timeout=(4,8))
+                            current_ip=str(ip_resp.json().get('ip','')).strip() if ip_resp.ok else ''
+                        except (requests.RequestException,ValueError):
+                            current_ip=''
+                        if current_ip:
+                            st.write('키움에 등록할 현재 Streamlit 서버 공인 IP')
+                            st.code(current_ip,language=None)
+                        st.caption('키움 REST API 홈페이지 → API 사용신청/단말기(IP) 등록에서 위 서버 IP를 등록한 뒤 다시 확인하세요.')
+                        st.link_button('키움 REST API · IP 등록/사용신청','https://openapi.kiwoom.com/',use_container_width=True)
+                    else:
+                        st.error(message)
+                        st.caption('8001 계열 오류면 실전/모의 키 구분과 App Key·App Secret 쌍을 다시 확인하세요.')
             st.info('Secrets 연결을 해제하려면 Streamlit → Manage app → Settings → Secrets에서 해당 KIWOOM_* 값을 제거해야 합니다.')
         else:
             if st.button('계좌 연결 해제'):
@@ -83,9 +98,23 @@ def connection_form():
                 st.rerun()
             except BrokerError as error:
                 message=str(error)
-                # Kiwoom's official SDK classifies 8001 as invalid credentials.
-                # A very common cause is using a demo key against the real endpoint (or vice versa).
-                if '8001' in message or '8002' in message or '8011' in message or '8012' in message:
+                if '8050' in message or '8040' in message or '8010' in message or '8103' in message:
+                    st.error('키움 단말기/IP 인증이 필요합니다 · '+message)
+                    st.info('등록해야 하는 IP는 지금 이 Streamlit 서버가 키움 API에 접속할 때 사용하는 공인 IP입니다. 집/회사 PC의 IP가 아닐 수 있습니다.')
+                    try:
+                        ip_resp=requests.get('https://api.ipify.org',params={'format':'json'},timeout=(4,8))
+                        current_ip=str(ip_resp.json().get('ip','')).strip() if ip_resp.ok else ''
+                    except (requests.RequestException,ValueError):
+                        current_ip=''
+                    if current_ip:
+                        st.code(current_ip,language=None)
+                        st.caption('위 IP를 키움 REST API 홈페이지의 API 사용신청/단말기(IP) 등록 화면에 등록한 뒤 다시 연결 확인을 누르세요.')
+                    else:
+                        st.caption('현재 Streamlit 서버의 공인 IP를 자동 확인하지 못했습니다. 키움 REST API 홈페이지의 단말기/IP 등록 안내를 확인하세요.')
+                    st.link_button('키움 REST API · IP 등록/사용신청','https://openapi.kiwoom.com/',use_container_width=True)
+                    st.warning('Streamlit 서버의 외부 IP가 바뀌면 키움에서 다시 IP 등록이 필요할 수 있습니다. 8050 오류는 App Key/Secret 오타가 아니라 단말기/IP 인증 단계의 오류입니다.')
+                # Kiwoom's official SDK classifies 8001/8002/8011/8012 as invalid credentials.
+                elif '8001' in message or '8002' in message or '8011' in message or '8012' in message:
                     other_mode='demo' if settings['mode']=='real' else 'real'
                     other_label='모의투자' if other_mode=='demo' else '실전 조회'
                     try:
