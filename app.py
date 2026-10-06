@@ -549,6 +549,7 @@ elif page=='관심종목':
     st.title('관심종목 점검')
     st.html('<div class="pd-intro">저장한 종목의 추세·실적·수급을 한 화면에서 점검하세요.</div>')
     st.caption('일별 종가: 공공데이터포털 · 동기 실적: OpenDART · 수급: KIS 연결 시 · 주문 기능 없음')
+    st.caption('배포 버전 · 2026-10-06 10:24 · 종목검색 분리 패치')
     if not api_key('DATA_GO_KR_SERVICE_KEY'):
         st.info('연결 설정에서 공공데이터 API 키를 입력하면 관심종목 조회가 열립니다.')
         st.stop()
