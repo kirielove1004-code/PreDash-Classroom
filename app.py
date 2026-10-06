@@ -9,6 +9,7 @@ import importlib
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import streamlit as st
+from streamlit_js_eval import streamlit_js_eval
 import predash.kiwoom as broker_module
 Kiwoom, BrokerError = broker_module.Kiwoom, broker_module.BrokerError
 from predash.classroom import account_settings, connection_form
@@ -98,6 +99,67 @@ except FileNotFoundError:
     pass
 
 PUBLIC_API_KEYS = ('DART_CRTFC_KEY','DATA_GO_KR_SERVICE_KEY','KRX_AUTH_KEY','CUSTOMS_API_KEY')
+
+PERSIST_KEY = 'predash_browser_state_v1'
+PERSIST_PAGES = {'오늘의 점검','관심종목','투자 근거','내 계좌','모의투자','매매 연습','매매 습관','연결 설정'}
+
+def load_browser_state():
+    """Restore non-secret working state from this browser's localStorage."""
+    if st.session_state.get('_browser_state_loaded'):
+        return
+    raw = streamlit_js_eval(
+        js_expressions=f"localStorage.getItem({json.dumps(PERSIST_KEY)}) || '__EMPTY__'",
+        want_output=True,
+        key='predash_persist_load_v1',
+    )
+    if raw is None:
+        return
+    st.session_state._browser_state_loaded = True
+    if raw == '__EMPTY__':
+        return
+    try:
+        state=json.loads(raw)
+    except (TypeError,ValueError):
+        return
+    page=state.get('navigation')
+    if page in PERSIST_PAGES and 'navigation' not in st.session_state:
+        st.session_state.navigation=page
+    codes=clean_codes(state.get('watch_codes') or [])
+    if codes and 'watch_codes' not in st.session_state:
+        st.session_state.watch_codes=codes
+    names=state.get('watch_names') or {}
+    if isinstance(names,dict) and codes and 'watch_names' not in st.session_state:
+        st.session_state.watch_names=clean_names(names,codes)
+    pick=str(state.get('decision_pick') or '').strip()
+    if re.fullmatch(r'[0-9]{6}',pick) and 'decision_pick' not in st.session_state:
+        st.session_state.decision_pick=pick
+    paper=state.get('paper_account')
+    if isinstance(paper,dict) and 'paper_account' not in st.session_state:
+        try:
+            st.session_state.paper_account=restore_account(json.dumps(paper,ensure_ascii=False))
+        except (PaperError,TypeError,ValueError):
+            pass
+
+def persist_browser_state():
+    """Auto-save non-secret work state in the current browser."""
+    state={
+        'navigation':st.session_state.get('navigation'),
+        'watch_codes':clean_codes(st.session_state.get('watch_codes',[])),
+        'watch_names':clean_names(st.session_state.get('watch_names',{}),clean_codes(st.session_state.get('watch_codes',[]))),
+        'decision_pick':st.session_state.get('decision_pick'),
+        'paper_account':st.session_state.get('paper_account'),
+    }
+    try:
+        payload=json.dumps(state,ensure_ascii=False,separators=(',',':'))
+    except (TypeError,ValueError):
+        return
+    streamlit_js_eval(
+        js_expressions=f"localStorage.setItem({json.dumps(PERSIST_KEY)}, {json.dumps(payload,ensure_ascii=False)})",
+        want_output=False,
+        key='predash_persist_save_v1',
+    )
+
+load_browser_state()
 
 def api_key(name):
     """Prefer a key entered in this browser session, then fall back to Streamlit Secrets."""
@@ -303,6 +365,8 @@ with st.sidebar:
     if password and st.button('로그아웃'):
         st.session_state.clear();st.rerun()
 
+persist_browser_state()
+
 
 if large_text:
     st.html('<style>.stApp p,.stApp li{font-size:20px}.pd-watch small,.pd-card-sub,.pd-card-note,.pd-card-body small,.pd-holding-head small{font-size:18px}.pd-v-table,.pd-v-empty,.pd-v-notice,.pd-v-company{font-size:18px}.pd-v-note,.pd-v-legend,.pd-v-table small,.pd-v-notice small,.pd-v-company small{font-size:16px}</style>')
@@ -449,7 +513,7 @@ elif page=='매매 연습':
                 st.session_state.paper_quotes={}
                 st.rerun()
             except (PaperError,UnicodeDecodeError) as exc:st.error(str(exc))
-        st.caption('현재 세션에 저장됩니다. 종료·로그아웃 전에 백업하면 다음 접속에서 기록을 이어갈 수 있습니다. 복원은 현재 모의 기록을 교체합니다.')
+        st.caption('모의투자 기록은 이 브라우저에 자동 저장됩니다. 같은 브라우저로 다시 접속하면 이어서 사용할 수 있으며, JSON 백업/복원도 계속 지원합니다.')
     account=st.session_state.get('paper_account')
     if account is None:
         with st.form('paper_start'):
@@ -599,7 +663,7 @@ elif page=='관심종목':
                 st.session_state.pop('watch_name_attempts',None)
                 st.rerun()
             except (ValueError,UnicodeDecodeError) as exc:st.error(str(exc))
-        st.caption('주소에는 종목코드만 저장되며, 종목명은 공식 조회로 복원됩니다. 백업 파일에는 코드와 종목명을 함께 보관합니다. 서버 세션이 끝나면 조회된 수치는 다시 불러와야 합니다.')
+        st.caption('관심종목은 주소와 이 브라우저에 자동 저장되며, 종목명은 공식 조회로 복원됩니다. 백업 파일에는 코드와 종목명을 함께 보관합니다. 서버 세션이 끝나면 조회된 수치는 다시 불러와야 합니다.')
     head,action=st.columns([4,1],vertical_alignment='center')
     head.subheader(f'저장한 관심종목 {len(codes)}개')
     refresh=action.button('목록 전체 새로고침',type='primary',disabled=not codes,use_container_width=True)
