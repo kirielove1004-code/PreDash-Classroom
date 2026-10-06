@@ -29,6 +29,27 @@ def dart_error(code):
     return DART_ERRORS.get(str(code), "DART가 정상 데이터를 반환하지 않았습니다. 승인 상태와 조회 조건을 확인하세요.")
 
 
+
+def data_go_request(url, params, raw_key):
+    """Try both encoded and decoded service keys because data.go.kr accepts either depending on the endpoint."""
+    variants=[]
+    raw=str(raw_key or '').strip()
+    decoded=unquote(raw)
+    for key in (raw,decoded):
+        if key and key not in variants:variants.append(key)
+    last=None
+    for key in variants:
+        try:
+            r=requests.get(url,params={**params,'serviceKey':key},timeout=(10,30))
+        except requests.RequestException as exc:
+            last=exc
+            continue
+        if r.status_code not in (401,403):
+            return r
+        last=r
+    if isinstance(last,requests.Response):return last
+    raise DataError('공공데이터포털 주식시세: 서버 연결에 실패했습니다.')
+
 def get(url, params):
     path = urlsplit(url).path
     labels = {"corpCode.xml": "DART 기업명·종목코드 목록", "document.xml": "DART 사업보고서 원문",
@@ -91,7 +112,8 @@ class Official:
     def __init__(self, dart_key=None, price_key=None):
         self.dart_key = (dart_key if dart_key is not None else os.getenv("DART_CRTFC_KEY", "")).strip()
         raw_price_key = price_key if price_key is not None else os.getenv("DATA_GO_KR_SERVICE_KEY", "")
-        self.price_key = unquote(str(raw_price_key).strip())
+        self.price_key_raw = str(raw_price_key).strip()
+        self.price_key = unquote(self.price_key_raw)
         self.corps = None
         self.names = {}
         self.price_rows = {}
@@ -148,7 +170,7 @@ class Official:
         for days in range(10):
             target = (date.today()-timedelta(days=days)).strftime("%Y%m%d")
             try:
-                response = get("https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo", {**params,"basDt":target}).json()["response"]
+                response = data_go_request("https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo", {**params,"basDt":target}, self.price_key_raw).json()["response"]
                 if str(response["header"].get("resultCode")) not in ("00","0"):
                     raise DataError("공공데이터포털 종목 검색: 시세 서비스 승인과 인증키를 확인하세요.")
                 items = (response.get("body",{}).get("items") or {}).get("item",[])
@@ -170,9 +192,8 @@ class Official:
         for days in range(10):
             target = (asof - timedelta(days=days)).strftime("%Y%m%d")
             try:
-                payload = get("https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo",
-                    {"serviceKey": self.price_key, "resultType": "json", "numOfRows": 100,
-                     "basDt": target, "likeSrtnCd": code}).json()
+                payload = data_go_request("https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo",
+                    {"resultType": "json", "numOfRows": 100,"basDt": target, "likeSrtnCd": code}, self.price_key_raw).json()
                 response = payload["response"]
                 if str(response["header"].get("resultCode")) not in ("00", "0"):
                     raise DataError("시세 API 승인·인증 오류")
@@ -197,7 +218,7 @@ class Official:
                 "likeSrtnCd":code,"beginBasDt":(asof-timedelta(days=50)).strftime('%Y%m%d'),
                 "endBasDt":(asof+timedelta(days=1)).strftime('%Y%m%d')}
         try:
-            response=get("https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo",params).json()["response"]
+            response=data_go_request("https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo",{k:v for k,v in params.items() if k!='serviceKey'},self.price_key_raw).json()["response"]
             if str(response['header'].get('resultCode')) not in ('00','0'):
                 raise DataError("공공데이터포털 일별 시세 승인·인증 오류")
             items=(response.get('body',{}).get('items') or {}).get('item',[])
