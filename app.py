@@ -167,7 +167,11 @@ def api_key(name):
     return str(session_keys.get(name) or os.getenv(name,'')).strip()
 
 def official_client():
-    return Official(dart_key=api_key('DART_CRTFC_KEY'),price_key=api_key('DATA_GO_KR_SERVICE_KEY'))
+    return Official(
+        dart_key=api_key('DART_CRTFC_KEY'),
+        price_key=api_key('DATA_GO_KR_SERVICE_KEY'),
+        krx_key=api_key('KRX_AUTH_KEY'),
+    )
 
 def api_key_source(name):
     if st.session_state.get('classroom_api_keys',{}).get(name):
