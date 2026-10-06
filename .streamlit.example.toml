@@ -3,3 +3,9 @@ DART_CRTFC_KEY = ""
 DATA_GO_KR_SERVICE_KEY = ""
 KRX_AUTH_KEY = ""
 CUSTOMS_API_KEY = ""
+
+# Kiwoom REST API · keep real/demo credentials separate
+KIWOOM_REAL_APP_KEY = ""
+KIWOOM_REAL_APP_SECRET = ""
+KIWOOM_DEMO_APP_KEY = ""
+KIWOOM_DEMO_APP_SECRET = ""
