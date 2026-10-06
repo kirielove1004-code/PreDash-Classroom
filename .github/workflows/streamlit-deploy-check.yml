@@ -13,6 +13,17 @@ jobs:
   wake-and-check:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Compile Python sources
+        run: python -m compileall -q app.py predash
+
       - name: Wait for Streamlit Cloud auto-deploy
         run: sleep 25
 
