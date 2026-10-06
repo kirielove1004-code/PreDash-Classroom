@@ -178,8 +178,12 @@ class Official:
             exact = [r for r in matches if q in (r["code"], re.sub(r"\s+", "", r["name"]).casefold())]
             if exact or matches:
                 return exact or matches[:30]
-        # DART 목록을 읽지 못한 경우에만 시세 API 검색으로 보조합니다.
-        return self.search_prices(query)
+        # 종목 검색은 시세 API 장애와 완전히 분리합니다.
+        # DART 목록을 읽지 못한 경우, 6자리 코드는 그대로 후보로 허용하고
+        # 종목명 검색은 실패 이유를 명확히 표시합니다.
+        if re.fullmatch(r"[0-9]{6}", query.strip()):
+            return [{"code": query.strip(), "name": query.strip()}]
+        raise DataError("종목명 검색용 OpenDART 기업 목록을 읽지 못했습니다. DART 연결을 확인하거나 6자리 종목코드로 검색하세요.")
 
     def search_prices(self, query):
         """Search the smaller price response without downloading DART's directory."""
