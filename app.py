@@ -94,7 +94,7 @@ p,li{font-size:16px;line-height:1.5}button p{font-size:16px!important}
 .pd-evidence-status{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border:1px solid #dddccc;background:#fffef9;margin:8px 0 16px}.pd-evidence-status>div{padding:10px 14px;border-right:1px solid #dddccc}.pd-evidence-status>div:last-child{border:0}.pd-evidence-status small{display:block;font-size:13px;color:#53665c}.pd-evidence-status b{font-size:16px;color:#214b3a}@media(max-width:700px){.pd-evidence-status{grid-template-columns:1fr 1fr}}
 </style>''')
 try:
-    for k in ('APP_PASSWORD','DART_CRTFC_KEY','DATA_GO_KR_SERVICE_KEY','KRX_AUTH_KEY','CUSTOMS_API_KEY'):
+    for k in ('APP_PASSWORD','DART_CRTFC_KEY','DATA_GO_KR_SERVICE_KEY','KRX_AUTH_KEY','CUSTOMS_API_KEY','KIWOOM_REAL_APP_KEY','KIWOOM_REAL_APP_SECRET','KIWOOM_DEMO_APP_KEY','KIWOOM_DEMO_APP_SECRET'):
         if k in st.secrets: os.environ[k]=str(st.secrets[k])
 except FileNotFoundError:
     pass
