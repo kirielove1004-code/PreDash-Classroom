@@ -1,14 +1,30 @@
 """Classroom credentials are held only in the current Streamlit session."""
+import os
 import streamlit as st
 from predash.kiwoom import Kiwoom, BrokerError
 
 
 def account_settings(mode=None):
-    settings = st.session_state.get('classroom_credentials', {})
-    selected = mode or settings.get('mode', 'real')
-    if selected != settings.get('mode'):
-        return dict(mode=selected, key='', secret='', cano='', product='')
-    return dict(mode=selected, **{k: settings.get(k, '') for k in ('key','secret','cano','product')})
+    """Prefer session credentials, then persistent Streamlit Secrets."""
+    session = st.session_state.get('classroom_credentials', {})
+    selected = mode or session.get('mode', 'real')
+    if session and selected == session.get('mode'):
+        return dict(mode=selected, **{k: session.get(k, '') for k in ('key','secret','cano','product')})
+    prefix='KIWOOM_DEMO_' if selected=='demo' else 'KIWOOM_REAL_'
+    key=os.getenv(prefix+'APP_KEY','').strip()
+    secret=os.getenv(prefix+'APP_SECRET','').strip()
+    return dict(mode=selected,key=key,secret=secret,cano='',product='')
+
+
+def credential_source(mode=None):
+    selected=mode or st.session_state.get('classroom_credentials',{}).get('mode','real')
+    session=st.session_state.get('classroom_credentials',{})
+    if session and session.get('mode')==selected and session.get('key') and session.get('secret'):
+        return '현재 세션'
+    settings=account_settings(selected)
+    if settings.get('key') and settings.get('secret'):
+        return 'Streamlit Secrets'
+    return '미연결'
 
 
 def connection_form():
@@ -16,9 +32,13 @@ def connection_form():
         for key in ('class_key','class_secret'):
             st.session_state.pop(key, None)
     st.subheader('내 증권사 계좌 연결')
-    st.caption('키움증권 REST API App Key·App Secret을 입력하세요. 현재 접속 세션에서만 사용합니다.')
-    if st.session_state.get('classroom_credentials'):
-        st.success('계좌 연결됨 · ' + ('모의투자' if account_settings()['mode']=='demo' else '실전 조회'))
+    st.caption('키움증권 REST API App Key·App Secret을 연결합니다. 장기 사용은 Streamlit Secrets, 일회성 테스트는 현재 세션 입력을 사용합니다.')
+    saved_real=account_settings('real')
+    saved_demo=account_settings('demo')
+    persistent_mode='real' if saved_real.get('key') and saved_real.get('secret') else 'demo' if saved_demo.get('key') and saved_demo.get('secret') else None
+    if st.session_state.get('classroom_credentials') or persistent_mode:
+        active=st.session_state.get('classroom_credentials',{}).get('mode') or persistent_mode
+        st.success('계좌 연결 준비됨 · ' + ('모의투자' if active=='demo' else '실전 조회') + ' · ' + credential_source(active))
         if st.button('계좌 연결 해제'):
             authorized = st.session_state.get('authorized')
             st.session_state.clear()
@@ -67,4 +87,4 @@ def connection_form():
                         st.caption('키움 공식 오류 분류상 8001/8002/8011/8012는 자격증명 오류입니다. 실전 키와 모의투자 키는 서로 호환되지 않습니다.')
                 else:
                     st.error(message)
-    st.info('연결 해제와 로그아웃은 키·잔고·접속 중 실습 기록을 지웁니다. 필요한 기록은 먼저 백업하세요.')
+    st.info('권장: 장기 사용은 Streamlit Secrets에 키움 실전/모의 키를 저장하세요. 세션 입력값은 로그아웃·재접속 시 사라집니다.')
