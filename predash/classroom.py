@@ -38,12 +38,29 @@ def connection_form():
     persistent_mode='real' if saved_real.get('key') and saved_real.get('secret') else 'demo' if saved_demo.get('key') and saved_demo.get('secret') else None
     if st.session_state.get('classroom_credentials') or persistent_mode:
         active=st.session_state.get('classroom_credentials',{}).get('mode') or persistent_mode
-        st.success('계좌 연결 준비됨 · ' + ('모의투자' if active=='demo' else '실전 조회') + ' · ' + credential_source(active))
-        if st.button('계좌 연결 해제'):
-            authorized = st.session_state.get('authorized')
-            st.session_state.clear()
-            if authorized: st.session_state.authorized = True
-            st.rerun()
+        source=credential_source(active)
+        st.success('계좌 연결 준비됨 · ' + ('모의투자' if active=='demo' else '실전 조회') + ' · ' + source)
+        if source=='Streamlit Secrets':
+            st.caption('Secrets 값은 화면에 표시하지 않습니다. 아래 버튼으로 실제 키움 토큰·잔고 조회까지 확인할 수 있습니다.')
+            if st.button('Secrets 연결 실제 확인',type='primary',use_container_width=True):
+                try:
+                    settings=account_settings(active)
+                    client=Kiwoom(settings=settings)
+                    with st.spinner('키움 토큰 발급과 잔고 조회를 확인합니다…'):
+                        client.authorize()
+                        client.balance()
+                    st.session_state['_kiwoom_client_demo' if active=='demo' else '_kiwoom_client']=client
+                    st.success('키움증권 연결 정상 · 계좌·보유종목·체결내역·수급 조회를 사용할 수 있습니다.')
+                except BrokerError as error:
+                    st.error(str(error))
+                    st.caption('8001 계열 오류면 실전/모의 키 구분과 App Key·App Secret 쌍을 다시 확인하세요.')
+            st.info('Secrets 연결을 해제하려면 Streamlit → Manage app → Settings → Secrets에서 해당 KIWOOM_* 값을 제거해야 합니다.')
+        else:
+            if st.button('계좌 연결 해제'):
+                authorized = st.session_state.get('authorized')
+                st.session_state.clear()
+                if authorized: st.session_state.authorized = True
+                st.rerun()
         return
     with st.form('classroom_connection'):
         mode = st.radio('투자 환경', ['실전 조회','모의투자'], horizontal=True)
