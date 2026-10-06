@@ -346,18 +346,17 @@ if page=='모의투자':
     settings=account_settings('demo')
     configured=all(settings[k] for k in ('key','secret'))
     with st.expander('모의계좌 연결 방법',expanded=not configured):
-        st.write('키움증권에서 모의투자 계좌를 발급받고, 그 모의계좌에 연결된 App Key와 App Secret을 발급받으세요.')
-        st.write('이 앱의 Settings → Secrets에 아래 4개 값을 추가하면 실전 키를 유지하면서 모의계좌를 함께 사용할 수 있습니다.')
-        st.code('키움_DEMO_APP_KEY = "모의투자 전용 App Key"\n키움_DEMO_APP_SECRET = "모의투자 전용 App Secret"\n키움_DEMO_CANO = "모의계좌 앞 8자리"\n키움_DEMO_ACNT_PRDT_CD = "모의계좌 뒤 2자리"',language='toml')
-        st.caption('실전용 키를 복사해 넣으면 연결되지 않습니다. 기존 키움_ENV=demo 설정만 사용하는 경우 기존 키움 API 키 설정도 지원합니다.')
-        st.link_button('키움 Developers · 모의계좌 API 신청','https://openapi.kiwoom.com/')
+        st.write('08 데이터 연결에서 투자 환경을 모의투자로 선택하고 키움증권 모의투자용 App Key와 App Secret을 입력하세요.')
+        st.write('키움 REST API 포털에서 모의투자 계좌를 등록한 뒤 해당 환경의 App Key·App Secret을 발급받아야 합니다.')
+        st.caption('실전용 키와 모의투자용 키는 서로 바꿔 사용할 수 없습니다. 계좌번호는 앱에 직접 입력하지 않습니다.')
+        st.link_button('키움증권 REST API 신청','https://openapi.kiwoom.com/')
     if not password:
         st.warning('모의계좌 데이터 조회 전 APP_PASSWORD를 설정하세요.')
         st.stop()
     if not configured:
-        st.info('모의계좌 전용 키와 계좌번호를 설정하면 연결 버튼이 활성화됩니다.')
+        st.info('08 데이터 연결에서 모의투자용 App Key와 App Secret을 연결하면 조회가 활성화됩니다.')
         st.stop()
-    st.caption('모의계좌 설정됨 · 키와 계좌번호 원문은 표시하지 않습니다.')
+    st.caption('모의계좌 설정됨 · App Key와 App Secret 원문은 표시하지 않습니다.')
     if st.button('모의계좌 연결 확인 · 잔고 새로고침',type='primary'):
         try:
             with st.spinner('키움 모의투자 서버에서 잔고를 조회합니다…'):
@@ -827,7 +826,7 @@ elif page=='연결 설정':
 
     connected=sum(bool(api_key(key)) for _,_,key,_,_ in api_specs)
     kis_connected=all(account_settings()[k] for k in ('key','secret'))
-    st.html(f"<div class='pd-summary'><div><span>공공 API</span><strong>{connected}/4</strong><small>필요한 항목만 연결</small></div><div><span>증권사 키움</span><strong>{'연결됨' if kis_connected else '미연결'}</strong><small>현재 세션 전용</small></div><div><span>저장 방식</span><strong>세션 보호</strong><small>로그아웃 시 입력 키 삭제</small></div></div>")
+    st.html(f"<div class='pd-summary'><div><span>공공 API</span><strong>{connected}/4</strong><small>필요한 항목만 연결</small></div><div><span>키움증권</span><strong>{'연결됨' if kis_connected else '미연결'}</strong><small>현재 세션 전용</small></div><div><span>저장 방식</span><strong>세션 보호</strong><small>로그아웃 시 입력 키 삭제</small></div></div>")
 
     st.subheader('01 · 공공 데이터 API')
     st.caption('수강 중에는 아래에서 바로 입력할 수 있습니다. 장기 사용은 본인 Streamlit Secrets에 저장하면 매번 다시 입력할 필요가 없습니다.')
@@ -916,7 +915,7 @@ elif page=='매매 습관':
     habit_mode='real' if mode_label=='실전 계좌' else 'demo'
     settings=account_settings(habit_mode)
     if habit_mode=='real' and account_settings()['mode']!='real':
-        st.warning('실전 분석에는 키움_ENV=real과 실전용 키움 API 키 설정이 필요합니다.')
+        st.warning('실전 분석에는 키움증권 실전 환경과 실전용 API 키 설정이 필요합니다.')
         st.stop()
     st.html(f"<div class='pd-badges'><span class='pd-badge gold'>분석 대상 · {mode_label}</span></div>")
     st.caption(f'{mode_label}의 체결 기록 분석 · 미체결·취소 제외 · 현재 로그인 세션에 보관')
