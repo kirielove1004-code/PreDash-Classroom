@@ -10,7 +10,7 @@
 4. 앱 로그인 → 연결 설정 → 실전 조회 또는 모의투자 선택 → 키움증권 REST API App Key·App Secret 입력 → 연결 확인.
 5. 관심종목·투자 근거·대시보드를 자신의 기획에 맞춰 수정합니다.
 
-키움증권 App Key·App Secret은 Secrets나 GitHub에 저장하지 않습니다. 접속 세션에서만 사용하며 연결 해제·로그아웃 시 키와 접속 중 실습 자료를 제거합니다. 필요한 실습 기록은 먼저 백업하세요. 서버가 키를 처리하므로 각자 관리하는 앱에서 사용하세요.
+키움증권 App Key·App Secret은 GitHub 코드에 저장하지 않습니다. 장기 사용은 Streamlit의 비공개 Secrets에 `KIWOOM_REAL_APP_KEY` / `KIWOOM_REAL_APP_SECRET` 또는 모의투자용 `KIWOOM_DEMO_APP_KEY` / `KIWOOM_DEMO_APP_SECRET`으로 저장할 수 있습니다. 일회성 테스트는 앱 세션 입력을 사용할 수 있습니다. Secrets 원문은 앱 화면에 표시하지 않습니다.
 
 ## 교육과 소통
 
