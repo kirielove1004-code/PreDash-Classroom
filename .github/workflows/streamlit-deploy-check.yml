@@ -1,0 +1,34 @@
+name: Streamlit deploy wake check
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: streamlit-deploy-check
+  cancel-in-progress: true
+
+jobs:
+  wake-and-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Streamlit Cloud auto-deploy
+        run: sleep 25
+
+      - name: Wake app and verify HTTP response
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://kirielove84.streamlit.app/"
+          for attempt in 1 2 3 4 5 6; do
+            code="$(curl -L -sS -o /tmp/predash.html -w "%{http_code}" --max-time 30 "$URL" || true)"
+            echo "attempt=$attempt http=$code"
+            if [[ "$code" =~ ^2|3 ]]; then
+              echo "Streamlit app is reachable."
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "Streamlit app did not become reachable after retries."
+          exit 1
