@@ -162,18 +162,24 @@ class Official:
         return self.corps[code]
 
     def search(self, query):
+        q = re.sub(r"\s+", "", query).casefold()
+        if not q:
+            return []
+        # 종목 찾기는 DART의 공식 상장사 목록을 우선 사용합니다.
+        # 공공데이터 시세 API가 403이어도 종목 검색 자체는 계속 동작해야 합니다.
         if self.corps is None:
             try:
                 self.corp("__load__")
             except DataError:
-                if self.corps is None:return self.search_prices(query)
-        q = re.sub(r"\s+", "", query).casefold()
-        if not q:
-            return []
-        matches = [{"code": c, "name": n} for c, n in self.names.items()
-                   if q in re.sub(r"\s+", "", n).casefold() or q == c]
-        exact = [r for r in matches if q in (r["code"], re.sub(r"\s+", "", r["name"]).casefold())]
-        return exact or matches[:30]
+                pass
+        if self.corps is not None and self.names:
+            matches = [{"code": c, "name": n} for c, n in self.names.items()
+                       if q in re.sub(r"\s+", "", n).casefold() or q == c]
+            exact = [r for r in matches if q in (r["code"], re.sub(r"\s+", "", r["name"]).casefold())]
+            if exact or matches:
+                return exact or matches[:30]
+        # DART 목록을 읽지 못한 경우에만 시세 API 검색으로 보조합니다.
+        return self.search_prices(query)
 
     def search_prices(self, query):
         """Search the smaller price response without downloading DART's directory."""
