@@ -116,6 +116,39 @@ def api_key_source(name):
         return 'Streamlit Secrets'
     return '미연결'
 
+
+def diagnose_public_api(label,key_name):
+    key=api_key(key_name)
+    if not key:return {'status':'미연결','detail':'API 키가 설정되지 않았습니다.'}
+    try:
+        if key_name=='DART_CRTFC_KEY':
+            r=requests.get('https://opendart.fss.or.kr/api/company.json',params={'crtfc_key':key,'corp_code':'00126380'},timeout=(5,12))
+            data=r.json();code=str(data.get('status',''))
+            return {'status':'정상','detail':'실제 OpenDART 인증·응답 성공'} if r.ok and code=='000' else {'status':'인증 실패','detail':f'OpenDART 응답코드 {code or r.status_code}'}
+        if key_name=='DATA_GO_KR_SERVICE_KEY':
+            for url in ('https://apis.data.go.kr/1160100/GetStockSecuritiesInfoService_V2/getStockPriceInfo_V2','https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo'):
+                r=requests.get(url,params={'serviceKey':key,'resultType':'json','numOfRows':1,'pageNo':1},timeout=(5,12))
+                try:
+                    h=r.json().get('response',{}).get('header',{});code=str(h.get('resultCode',''))
+                    if r.ok and code in ('00','0','000'):return {'status':'정상','detail':'실제 금융위원회 주식시세 API 응답 성공'}
+                except ValueError:pass
+            return {'status':'인증 실패','detail':'금융위원회 주식시세 API 응답 실패'}
+        if key_name=='KRX_AUTH_KEY':
+            day=(datetime.now(ZoneInfo('Asia/Seoul')).date()-timedelta(days=1))
+            r=requests.get('https://data-dbg.krx.co.kr/svc/apis/sto/stk_bydd_trd',headers={'AUTH_KEY':key},params={'basDd':day.strftime('%Y%m%d')},timeout=(5,12))
+            try:rows=r.json().get('OutBlock_1')
+            except ValueError:rows=None
+            return {'status':'정상','detail':'실제 KRX 일별 거래정보 응답 성공'} if r.ok and isinstance(rows,list) else {'status':'인증 실패','detail':f'KRX 응답 HTTP {r.status_code}'}
+        if key_name=='CUSTOMS_API_KEY':
+            end=(datetime.now()-timedelta(days=35)).strftime('%Y%m')
+            r=requests.get('https://apis.data.go.kr/1220000/nitemtrade/getNitemtradeList',params={'serviceKey':key,'strtYymm':end,'endYymm':end,'hsSgn':'8504','cntyCd':'US'},timeout=(5,15))
+            ok=r.ok and ('<resultCode>00</resultCode>' in r.text[:800] or '"resultCode":"00"' in r.text[:800])
+            return {'status':'정상','detail':'실제 관세청 수출입 API 응답 성공'} if ok else {'status':'인증 실패','detail':f'관세청 응답 HTTP {r.status_code}'}
+        return {'status':'오류','detail':'진단 미구현'}
+    except requests.Timeout:return {'status':'오류','detail':'응답 시간 초과'}
+    except requests.RequestException:return {'status':'오류','detail':'기관 서버 연결 실패'}
+    except Exception:return {'status':'오류','detail':'응답 형식을 확인하지 못했습니다.'}
+
 def kis_client(mode=None):
     """Reuse the short-lived access token across Streamlit reruns in this session."""
     settings=account_settings(mode)
@@ -826,6 +859,19 @@ elif page=='연결 설정':
         else:
             st.info('새로 입력한 키가 없습니다. 기존 연결 상태를 유지합니다.')
         st.rerun()
+
+    st.subheader('연결 진단')
+    st.caption('키 저장 여부가 아니라 각 기관 서버에 실제 테스트 요청을 보내 정상·인증 실패·오류를 구분합니다.')
+    if st.button('4개 API 실제 연결 진단',type='primary',use_container_width=True):
+        results={}
+        with st.spinner('기관 API에 실제 테스트 요청 중입니다…'):
+            for label,desc,key,url,feature in api_specs:results[key]=diagnose_public_api(label,key)
+        st.session_state['public_api_diagnostics']=results
+    for label,desc,key,url,feature in api_specs:
+        result=st.session_state.get('public_api_diagnostics',{}).get(key)
+        if not result:continue
+        msg=f"{label} · {result['status']} · {result['detail']}"
+        (st.success if result['status']=='정상' else st.info if result['status']=='미연결' else st.error)(msg)
 
     links=st.columns(4)
     for col,(label,desc,key,url,feature) in zip(links,api_specs):
