@@ -66,3 +66,29 @@ def benchmark(rows,code):
     if markets=={'KOSDAQ'}:return '코스닥'
     return None
 
+
+
+def public_index_bars(code,today):
+    """Read-only KOSPI/KOSDAQ index fallback via FinanceDataReader."""
+    symbol='KS11' if code=='0001' else 'KQ11' if code=='1001' else None
+    if not symbol:
+        raise MacroError('지원하지 않는 지수입니다.')
+    try:
+        import FinanceDataReader as fdr
+        from datetime import timedelta
+        frame=fdr.DataReader(symbol,(today-timedelta(days=70)).isoformat(),(today+timedelta(days=1)).isoformat())
+    except Exception as exc:
+        raise MacroError('시장 지수 보조조회에 실패했습니다.') from exc
+    if frame is None or frame.empty:
+        raise MacroError('시장 지수 보조자료가 없습니다.')
+    rows=[]
+    for idx,row in frame.iterrows():
+        try:
+            close=float(row['Close'])
+            if close<=0:continue
+            rows.append({'stck_bsop_date':idx.strftime('%Y%m%d'),'bstp_nmix_prpr':close})
+        except Exception:
+            continue
+    if not rows:
+        raise MacroError('시장 지수 보조자료를 읽지 못했습니다.')
+    return rows
