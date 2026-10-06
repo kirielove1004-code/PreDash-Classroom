@@ -280,9 +280,21 @@ def diagnose_public_api(label,key_name):
                 except requests.Timeout:
                     last_timeout=True
                     if attempt==2:
-                        return _diagnostic_result('응답 지연','OpenDART가 3회 연속 제한시간 안에 응답하지 않았습니다.',
+                        try:
+                            alt=requests.get('https://opendart.fss.or.kr/api/corpCode.xml',
+                                params={'crtfc_key':key},timeout=(10,45),
+                                headers={'User-Agent':'PreDash-Classroom/1.0','Connection':'close'})
+                            head=(alt.content or b'')[:16]
+                            if alt.ok and (head.startswith(b'PK') or head.lstrip().startswith(b'<')):
+                                return _diagnostic_result('부분 정상',
+                                    'OpenDART 기업개황 응답은 지연됐지만 기업코드 목록 API는 응답했습니다.',
+                                    'DART 키는 유지하세요. 재무·공시는 기관 응답 지연 시 자동 보류하고, 종목검색은 보조 경로를 계속 사용합니다.',
+                                    'company.json 3회 timeout · corpCode.xml HTTP 200')
+                        except requests.RequestException:
+                            pass
+                        return _diagnostic_result('응답 지연','OpenDART가 반복해서 제한시간 안에 응답하지 않았습니다.',
                             '키 오류로 보지 않습니다. 앱은 종목검색 보조 경로를 사용하고, DART 재무·공시는 잠시 후 다시 진단하세요.',
-                            '3회 재시도 · 최대 응답대기 30초')
+                            'company.json 3회 재시도 · corpCode.xml 보조 확인 실패')
             if r is None:
                 return _diagnostic_result('응답 지연','OpenDART 응답을 받지 못했습니다.',
                     '잠시 후 다시 진단하세요.','재시도 실패')
@@ -358,8 +370,17 @@ def diagnose_public_api(label,key_name):
                     return _diagnostic_result('정상',f'실제 KRX {test_name} 응답에 성공했습니다.','',f'HTTP 200 · {test_name}')
                 failures.append((test_name,_classify_gateway_failure('KRX',r,code=code,message=message)))
             if failures and all(item[1]['status']=='키 오류' for item in failures):
+                try:
+                    fallback=daily_activity('', '005930', today)
+                    if fallback and fallback.get('date'):
+                        return _diagnostic_result('대체 사용 중',
+                            'KRX OPEN API 인증키는 HTTP 401로 거부됐지만, 대시보드의 거래량·거래대금·시가총액 조회는 KRX 보조 경로로 사용할 수 있습니다.',
+                            '대시보드 사용은 계속할 수 있습니다. KRX OPEN API 직접연결이 필요할 때만 KRX에서 활성 인증키와 주식 API 이용신청을 다시 확인하세요.',
+                            'OPEN API 401 · 보조 KRX 조회 성공 '+str(fallback.get('date')))
+                except KRXError:
+                    pass
                 return _diagnostic_result('키 오류','KRX의 거래정보와 종목기본정보가 모두 HTTP 401로 인증키를 거부했습니다.',
-                    '코드로 우회할 수 없는 인증 문제입니다. KRX OPEN API에서 현재 활성 인증키를 다시 복사하고, 사용할 주식 API의 이용신청 상태를 확인한 뒤 KRX_AUTH_KEY를 교체하세요.',
+                    'KRX OPEN API에서 현재 활성 인증키를 다시 복사하고, 사용할 주식 API의 이용신청 상태를 확인한 뒤 KRX_AUTH_KEY를 교체하세요.',
                     ' · '.join(f"{name}:{res.get('evidence','')}" for name,res in failures))
             return failures[0][1] if failures else _diagnostic_result('인증 실패','KRX 진단 결과를 확인하지 못했습니다.')
 
@@ -387,14 +408,20 @@ def diagnose_public_api(label,key_name):
                     message=m.group(1) if m else body
                 if r.ok and (code in ('00','0','000') or '<resultCode>00</resultCode>' in body):
                     return _diagnostic_result('정상',f'실제 관세청 수출입 API 응답에 성공했습니다. ({source})','',f'resultCode {code or "00"}')
-                failures.append((source,_classify_gateway_failure('관세청',r,code=code,message=message)))
-            # Error code 30 is definitive: the supplied service key is not registered for this API.
-            code30=next((res for _,res in failures if '코드 30' in res.get('evidence','')),None)
+                failures.append((source,code,_classify_gateway_failure('관세청',r,code=code,message=message)))
+            # Code 30 means the key is not registered for this exact service.
+            code30=next(((source,res) for source,code,res in failures if str(code)=='30' or '코드 30' in res.get('evidence','')),None)
             if code30:
-                return _diagnostic_result('키 오류','관세청 API가 인증코드 30(SERVICE_KEY_IS_NOT_REGISTERED_ERROR)을 반환했습니다.',
-                    '관세청 「품목별 국가별 수출입실적(GW)」 활용신청을 완료한 뒤, 그 활용신청에서 유효한 공공데이터포털 인증키를 사용하세요. 새 공공데이터 키가 있어도 이 관세청 서비스 활용신청이 없으면 코드 30이 계속 납니다.',
-                    code30.get('evidence','코드 30'))
-            return failures[0][1] if failures else _diagnostic_result('미연결','관세청 진단에 사용할 키가 없습니다.',
+                source,res=code30
+                if source=='DATA_GO_KR_SERVICE_KEY':
+                    return _diagnostic_result('서비스 미승인',
+                        '공공데이터 인증키 자체는 사용 가능하지만 관세청 「품목별 수출입실적(GW)」 서비스에는 아직 등록되지 않았습니다.',
+                        '공공데이터포털에서 관세청 「품목별 수출입실적(GW)」 활용신청만 추가로 완료하세요. 승인 전까지 이 기능은 선택 기능으로 보류됩니다.',
+                        res.get('evidence','코드 30'))
+                return _diagnostic_result('키 오류','관세청 전용 키가 인증코드 30을 반환했습니다.',
+                    '관세청 서비스 활용신청에 연결된 공공데이터포털 인증키로 CUSTOMS_API_KEY를 교체하세요.',
+                    res.get('evidence','코드 30'))
+            return failures[0][2] if failures else _diagnostic_result('미연결','관세청 진단에 사용할 키가 없습니다.',
                 '관세청 서비스 활용신청 후 인증키를 연결하세요.')
 
         return _diagnostic_result('오류','진단 미구현','앱 진단 코드를 확인하세요.')
@@ -513,9 +540,10 @@ def watch_fetch(code,provider,today):
     if all(account_settings()[k] for k in ('key','secret')):
         try:result['flow']=broker_client().investor_flow(code)
         except BrokerError as exc:result['errors']['flow']=str(exc)
-    if api_key('KRX_AUTH_KEY'):
-        try:result['krx']=daily_activity(api_key('KRX_AUTH_KEY'),code,today)
-        except KRXError as exc:result['errors']['krx']=str(exc)
+    try:
+        result['krx']=daily_activity(api_key('KRX_AUTH_KEY'),code,today)
+    except KRXError as exc:
+        result['errors']['krx']=str(exc)
     if result.get('benchmark') and result.get('price_rows'):
         try:
             market_code='0001' if result['benchmark']=='코스피' else '1001'
@@ -1084,8 +1112,8 @@ elif page=='연결 설정':
     api_specs=[
         ('DART','기업 실적 · 공시','DART_CRTFC_KEY','https://opendart.fss.or.kr/','재무·공시 분석'),
         ('공공데이터','종목 · 일별 시세','DATA_GO_KR_SERVICE_KEY','https://www.data.go.kr/','관심종목·모의투자 시세'),
-        ('KRX','거래량 · 거래대금 · 시가총액','KRX_AUTH_KEY','https://openapi.krx.co.kr/','시장 거래정보'),
-        ('관세청','품목별 국가별 수출입','CUSTOMS_API_KEY','https://www.data.go.kr/data/15100475/openapi.do','수출 흐름 분석'),
+        ('KRX','거래량 · 거래대금 · 시가총액','KRX_AUTH_KEY','https://openapi.krx.co.kr/','시장 거래정보 · OPEN API는 선택'),
+        ('관세청','품목별 국가별 수출입','CUSTOMS_API_KEY','https://www.data.go.kr/data/15101609/openapi.do','수출 흐름 분석 · 선택'),
     ]
 
     connected=sum(bool(api_key(key)) for _,_,key,_,_ in api_specs)
@@ -1133,7 +1161,14 @@ elif page=='연결 설정':
         result=st.session_state.get('public_api_diagnostics',{}).get(key)
         if not result:continue
         msg=f"{label} · {result['status']} · {result['detail']}"
-        renderer=st.success if result['status']=='정상' else st.info if result['status'] in ('미연결','응답 지연','호출 한도') else st.error
+        if result['status']=='정상':
+            renderer=st.success
+        elif result['status'] in ('미연결','응답 지연','호출 한도','부분 정상','대체 사용 중'):
+            renderer=st.info
+        elif key=='CUSTOMS_API_KEY' and result['status'] in ('서비스 미승인','키 오류','만료','IP 제한'):
+            renderer=st.warning
+        else:
+            renderer=st.error
         renderer(msg)
         if result.get('evidence'):st.caption('판정 근거 · '+result['evidence'])
         if result.get('action'):st.caption('해결 방법 · '+result['action'])
