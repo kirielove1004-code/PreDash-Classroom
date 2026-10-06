@@ -25,3 +25,48 @@ def summarize_flow(rows,today):
             'five_day':{key:sum(row[key] for _,row in selected) for key in latest[1]},
             'history':history,'sessions':len(selected),'from':selected[-1][0].isoformat()}
 
+
+
+def public_investor_flow(code,today):
+    """Fallback investor net-buy quantity from KRX data via pykrx.
+
+    Returns the same shape as Kiwoom investor_flow so the dashboard can keep
+    showing foreign/institution/individual flow when broker authentication is
+    unavailable. This is a read-only public-data fallback, not account data.
+    """
+    try:
+        from pykrx import stock
+        start=(today.replace(day=1) if today.day>20 else today)
+        # Ask for enough calendar history to cover at least ~20 sessions.
+        from datetime import timedelta
+        from_day=(today-timedelta(days=45)).strftime('%Y%m%d')
+        to_day=today.strftime('%Y%m%d')
+        frame=stock.get_market_trading_volume_by_date(
+            from_day,to_day,str(code),on='순매수',detail=False,freq='d'
+        )
+    except Exception as exc:
+        raise ValueError('KRX 보조 수급 조회에 실패했습니다.') from exc
+    if frame is None or getattr(frame,'empty',True):
+        return None
+    rows=[]
+    for idx,row in frame.iterrows():
+        try:
+            stamp=idx.strftime('%Y%m%d')
+            individual=row.get('개인')
+            foreign=row.get('외국인합계')
+            institution=row.get('기관합계')
+            if individual is None or foreign is None or institution is None:
+                continue
+            rows.append({
+                'stck_bsop_date':stamp,
+                'prsn_ntby_qty':int(individual),
+                'frgn_ntby_qty':int(foreign),
+                'orgn_ntby_qty':int(institution),
+            })
+        except Exception:
+            continue
+    result=summarize_flow(rows,today)
+    if result:
+        result['source']='KRX 공개자료 보조조회(pykrx)'
+        result['fallback']=True
+    return result
