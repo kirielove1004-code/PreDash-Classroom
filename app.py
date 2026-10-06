@@ -268,8 +268,24 @@ def diagnose_public_api(label,key_name):
 
     try:
         if key_name=='DART_CRTFC_KEY':
-            r=requests.get('https://opendart.fss.or.kr/api/company.json',
-                params={'crtfc_key':key,'corp_code':'00126380'},timeout=(5,15))
+            r=None
+            last_timeout=False
+            for attempt in range(3):
+                try:
+                    r=requests.get('https://opendart.fss.or.kr/api/company.json',
+                        params={'crtfc_key':key,'corp_code':'00126380'},
+                        timeout=(7,30 if attempt else 18),
+                        headers={'User-Agent':'PreDash-Classroom/1.0','Connection':'close'})
+                    break
+                except requests.Timeout:
+                    last_timeout=True
+                    if attempt==2:
+                        return _diagnostic_result('응답 지연','OpenDART가 3회 연속 제한시간 안에 응답하지 않았습니다.',
+                            '키 오류로 보지 않습니다. 앱은 종목검색 보조 경로를 사용하고, DART 재무·공시는 잠시 후 다시 진단하세요.',
+                            '3회 재시도 · 최대 응답대기 30초')
+            if r is None:
+                return _diagnostic_result('응답 지연','OpenDART 응답을 받지 못했습니다.',
+                    '잠시 후 다시 진단하세요.','재시도 실패')
             try:data=r.json()
             except ValueError:data={}
             code=str(data.get('status',''))
@@ -323,37 +339,63 @@ def diagnose_public_api(label,key_name):
             today=datetime.now(ZoneInfo('Asia/Seoul')).date()
             day=today-timedelta(days=1)
             while day.weekday()>=5:day-=timedelta(days=1)
-            r=requests.get('https://data-dbg.krx.co.kr/svc/apis/sto/stk_bydd_trd',
-                headers={'AUTH_KEY':key},params={'basDd':day.strftime('%Y%m%d')},timeout=(5,15))
-            code='';message=''
-            try:
-                data=r.json();rows=data.get('OutBlock_1')
-                code=str(data.get('resultCode') or data.get('code') or '')
-                message=str(data.get('resultMsg') or data.get('message') or data.get('msg') or '')
-            except ValueError:
-                rows=None;message=_response_text(r)
-            if r.ok and isinstance(rows,list):
-                return _diagnostic_result('정상','실제 KRX 일별 거래정보 응답에 성공했습니다.','','HTTP 200 · OutBlock_1')
-            return _classify_gateway_failure('KRX',r,code=code,message=message)
+            tests=(
+                ('일별 거래정보','https://data-dbg.krx.co.kr/svc/apis/sto/stk_bydd_trd'),
+                ('종목 기본정보','https://data-dbg.krx.co.kr/svc/apis/sto/stk_isu_base_info'),
+            )
+            failures=[]
+            for test_name,url in tests:
+                r=requests.get(url,headers={'AUTH_KEY':key},
+                    params={'basDd':day.strftime('%Y%m%d')},timeout=(5,15))
+                code='';message=''
+                try:
+                    data=r.json();rows=data.get('OutBlock_1')
+                    code=str(data.get('resultCode') or data.get('code') or '')
+                    message=str(data.get('resultMsg') or data.get('message') or data.get('msg') or '')
+                except ValueError:
+                    rows=None;message=_response_text(r)
+                if r.ok and isinstance(rows,list):
+                    return _diagnostic_result('정상',f'실제 KRX {test_name} 응답에 성공했습니다.','',f'HTTP 200 · {test_name}')
+                failures.append((test_name,_classify_gateway_failure('KRX',r,code=code,message=message)))
+            if failures and all(item[1]['status']=='키 오류' for item in failures):
+                return _diagnostic_result('키 오류','KRX의 거래정보와 종목기본정보가 모두 HTTP 401로 인증키를 거부했습니다.',
+                    '코드로 우회할 수 없는 인증 문제입니다. KRX OPEN API에서 현재 활성 인증키를 다시 복사하고, 사용할 주식 API의 이용신청 상태를 확인한 뒤 KRX_AUTH_KEY를 교체하세요.',
+                    ' · '.join(f"{name}:{res.get('evidence','')}" for name,res in failures))
+            return failures[0][1] if failures else _diagnostic_result('인증 실패','KRX 진단 결과를 확인하지 못했습니다.')
 
         if key_name=='CUSTOMS_API_KEY':
             end=(datetime.now()-timedelta(days=35)).strftime('%Y%m')
-            r=requests.get('https://apis.data.go.kr/1220000/nitemtrade/getNitemtradeList',
-                params={'serviceKey':key,'strtYymm':end,'endYymm':end,'hsSgn':'8504','cntyCd':'US'},timeout=(5,18))
-            body=_response_text(r)
-            code='';message=''
-            try:
-                data=r.json()
-                header=data.get('response',{}).get('header',{}) if isinstance(data,dict) else {}
-                code=str(header.get('resultCode',''));message=str(header.get('resultMsg',''))
-            except ValueError:
-                m=re.search(r'<(?:returnReasonCode|resultCode)>([^<]+)',body,re.I)
-                code=m.group(1) if m else ''
-                m=re.search(r'<(?:returnAuthMsg|resultMsg|errMsg)>([^<]+)',body,re.I)
-                message=m.group(1) if m else body
-            if r.ok and (code in ('00','0','000') or '<resultCode>00</resultCode>' in body):
-                return _diagnostic_result('정상','실제 관세청 수출입 API 응답에 성공했습니다.','','resultCode '+(code or '00'))
-            return _classify_gateway_failure('관세청',r,code=code,message=message)
+            candidates=[]
+            for candidate,source in ((key,'CUSTOMS_API_KEY'),(api_key('DATA_GO_KR_SERVICE_KEY'),'DATA_GO_KR_SERVICE_KEY')):
+                candidate=str(candidate or '').strip()
+                if candidate and candidate not in [x[0] for x in candidates]:
+                    candidates.append((candidate,source))
+            failures=[]
+            for candidate,source in candidates:
+                r=requests.get('https://apis.data.go.kr/1220000/nitemtrade/getNitemtradeList',
+                    params={'serviceKey':candidate,'strtYymm':end,'endYymm':end,'hsSgn':'8504','cntyCd':'US'},timeout=(5,18))
+                body=_response_text(r)
+                code='';message=''
+                try:
+                    data=r.json()
+                    header=data.get('response',{}).get('header',{}) if isinstance(data,dict) else {}
+                    code=str(header.get('resultCode',''));message=str(header.get('resultMsg',''))
+                except ValueError:
+                    m=re.search(r'<(?:returnReasonCode|resultCode)>([^<]+)',body,re.I)
+                    code=m.group(1) if m else ''
+                    m=re.search(r'<(?:returnAuthMsg|resultMsg|errMsg)>([^<]+)',body,re.I)
+                    message=m.group(1) if m else body
+                if r.ok and (code in ('00','0','000') or '<resultCode>00</resultCode>' in body):
+                    return _diagnostic_result('정상',f'실제 관세청 수출입 API 응답에 성공했습니다. ({source})','',f'resultCode {code or "00"}')
+                failures.append((source,_classify_gateway_failure('관세청',r,code=code,message=message)))
+            # Error code 30 is definitive: the supplied service key is not registered for this API.
+            code30=next((res for _,res in failures if '코드 30' in res.get('evidence','')),None)
+            if code30:
+                return _diagnostic_result('키 오류','관세청 API가 인증코드 30(SERVICE_KEY_IS_NOT_REGISTERED_ERROR)을 반환했습니다.',
+                    '관세청 「품목별 국가별 수출입실적(GW)」 활용신청을 완료한 뒤, 그 활용신청에서 유효한 공공데이터포털 인증키를 사용하세요. 새 공공데이터 키가 있어도 이 관세청 서비스 활용신청이 없으면 코드 30이 계속 납니다.',
+                    code30.get('evidence','코드 30'))
+            return failures[0][1] if failures else _diagnostic_result('미연결','관세청 진단에 사용할 키가 없습니다.',
+                '관세청 서비스 활용신청 후 인증키를 연결하세요.')
 
         return _diagnostic_result('오류','진단 미구현','앱 진단 코드를 확인하세요.')
     except requests.Timeout:
