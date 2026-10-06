@@ -5,7 +5,7 @@ from predash.kiwoom import Kiwoom, BrokerError
 
 def account_settings(mode=None):
     settings = st.session_state.get('classroom_credentials', {})
-    selected = mode or settings.get('mode', 'demo')
+    selected = mode or settings.get('mode', 'real')
     if selected != settings.get('mode'):
         return dict(mode=selected, key='', secret='', cano='', product='')
     return dict(mode=selected, **{k: settings.get(k, '') for k in ('key','secret','cano','product')})
@@ -26,12 +26,12 @@ def connection_form():
             st.rerun()
         return
     with st.form('classroom_connection'):
-        mode = st.radio('투자 환경', ['모의투자','실전 조회'], horizontal=True)
+        mode = st.radio('투자 환경', ['실전 조회','모의투자'], horizontal=True)
         key = st.text_input('App Key', type='password', key='class_key')
         secret = st.text_input('App Secret', type='password', key='class_secret')
         submitted = st.form_submit_button('연결 확인', type='primary', use_container_width=True)
     if submitted:
-        settings = dict(mode='demo' if mode=='모의투자' else 'real',key=key.strip(),secret=secret.strip(),cano='',product='')
+        settings = dict(mode='real' if mode=='실전 조회' else 'demo',key=key.strip(),secret=secret.strip(),cano='',product='')
         try:
             client = Kiwoom(settings=settings)
             with st.spinner('잔고 조회 권한을 확인합니다…'):
