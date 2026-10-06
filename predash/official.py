@@ -125,15 +125,17 @@ def number(value):
 
 
 class Official:
-    def __init__(self, dart_key=None, price_key=None):
+    def __init__(self, dart_key=None, price_key=None, krx_key=None):
         self.dart_key = (dart_key if dart_key is not None else os.getenv("DART_CRTFC_KEY", "")).strip()
         raw_price_key = price_key if price_key is not None else os.getenv("DATA_GO_KR_SERVICE_KEY", "")
         self.price_key_raw = str(raw_price_key).strip()
         self.price_key = unquote(self.price_key_raw)
+        self.krx_key = str(krx_key if krx_key is not None else os.getenv("KRX_AUTH_KEY", "")).strip()
         self.corps = None
         self.names = {}
         self.price_rows = {}
         self.annual_cache = {}
+        self.krx_names = None
 
     def dart(self, endpoint, **params):
         try:
@@ -147,16 +149,88 @@ class Official:
             raise DataError(dart_error(payload.get("status")))
         return payload
 
-    def corp(self, code):
-        if self.corps is None:
-            raw = get("https://opendart.fss.or.kr/api/corpCode.xml", {"crtfc_key": self.dart_key}).content
-            try:
+    def _load_dart_corps(self):
+        if self.corps is not None:
+            return
+        if not self.dart_key:
+            raise DataError("DART 인증키가 설정되지 않았습니다.")
+        raw = get("https://opendart.fss.or.kr/api/corpCode.xml", {"crtfc_key": self.dart_key}).content
+        try:
+            # OpenDART documents this endpoint as ZIP, but some clients/proxies can
+            # receive the inner XML directly. Support both representations.
+            if zipfile.is_zipfile(io.BytesIO(raw)):
                 with zipfile.ZipFile(io.BytesIO(raw)) as z:
-                    root = ElementTree.fromstring(z.read("CORPCODE.xml"))
-                self.corps = {(n.findtext("stock_code") or "").strip(): n.findtext("corp_code") for n in root.findall("list")}
-                self.names = {(n.findtext("stock_code") or "").strip(): n.findtext("corp_name") for n in root.findall("list") if (n.findtext("stock_code") or "").strip()}
-            except (zipfile.BadZipFile, ElementTree.ParseError, KeyError):
-                raise DataError("DART 기업 목록을 읽을 수 없습니다. 키 승인을 확인하세요.") from None
+                    candidates=[name for name in z.namelist() if name.upper().endswith("CORPCODE.XML")]
+                    if not candidates:
+                        raise KeyError("CORPCODE.xml")
+                    xml_bytes=z.read(candidates[0])
+            else:
+                xml_bytes=raw
+            root=ElementTree.fromstring(xml_bytes)
+            status=(root.findtext(".//status") or "").strip()
+            if status and status!="000":
+                raise DataError(dart_error(status))
+            corps={}
+            names={}
+            for node in root.findall(".//list"):
+                stock=(node.findtext("stock_code") or "").strip()
+                corp_code=(node.findtext("corp_code") or "").strip()
+                corp_name=(node.findtext("corp_name") or "").strip()
+                if re.fullmatch(r"[0-9]{6}",stock) and re.fullmatch(r"[0-9]{8}",corp_code):
+                    corps[stock]=corp_code
+                    if corp_name:names[stock]=corp_name
+            if not corps:
+                raise DataError("DART 기업 목록에 상장 종목이 없습니다.")
+            self.corps=corps
+            self.names=names
+        except DataError:
+            raise
+        except (zipfile.BadZipFile, ElementTree.ParseError, KeyError, ValueError):
+            raise DataError("DART 기업 목록 응답을 해석하지 못했습니다.") from None
+
+    def _load_krx_names(self):
+        """Load KOSPI/KOSDAQ official stock master as a search fallback."""
+        if self.krx_names is not None:
+            return self.krx_names
+        if not self.krx_key:
+            raise DataError("KRX 인증키가 설정되지 않았습니다.")
+        last_error=None
+        today=date.today()
+        for offset in range(12):
+            day=today-timedelta(days=offset)
+            if day.weekday()>=5:
+                continue
+            names={}
+            for endpoint in ("stk_isu_base_info","ksq_isu_base_info"):
+                try:
+                    r=requests.get(
+                        f"https://data-dbg.krx.co.kr/svc/apis/sto/{endpoint}",
+                        headers={"AUTH_KEY":self.krx_key},
+                        params={"basDd":day.strftime("%Y%m%d")},
+                        timeout=(5,20),
+                    )
+                    if r.status_code in (401,403):
+                        raise DataError(f"KRX 종목기본정보 · HTTP {r.status_code}: 인증 또는 서비스 신청 상태를 확인하세요.")
+                    r.raise_for_status()
+                    rows=r.json().get("OutBlock_1",[])
+                    if not isinstance(rows,list):
+                        raise ValueError
+                    for row in rows:
+                        code=str(row.get("ISU_SRT_CD","")).strip()
+                        name=str(row.get("ISU_ABBRV") or row.get("ISU_NM") or "").strip()
+                        if re.fullmatch(r"[0-9A-Z]{6}",code) and name:
+                            names[code]=name
+                except (requests.RequestException,ValueError,DataError) as exc:
+                    last_error=exc
+            if names:
+                self.krx_names=names
+                return names
+        if isinstance(last_error,DataError):
+            raise last_error
+        raise DataError("KRX 종목기본정보를 불러오지 못했습니다.")
+
+    def corp(self, code):
+        self._load_dart_corps()
         if code not in self.corps:
             raise DataError("상장 종목코드를 찾지 못했습니다.")
         return self.corps[code]
@@ -165,25 +239,31 @@ class Official:
         q = re.sub(r"\s+", "", query).casefold()
         if not q:
             return []
-        # 종목 찾기는 DART의 공식 상장사 목록을 우선 사용합니다.
-        # 공공데이터 시세 API가 403이어도 종목 검색 자체는 계속 동작해야 합니다.
-        if self.corps is None:
-            try:
-                self.corp("__load__")
-            except DataError:
-                pass
-        if self.corps is not None and self.names:
-            matches = [{"code": c, "name": n} for c, n in self.names.items()
-                       if q in re.sub(r"\s+", "", n).casefold() or q == c]
-            exact = [r for r in matches if q in (r["code"], re.sub(r"\s+", "", r["name"]).casefold())]
+        sources=[]
+        try:
+            self._load_dart_corps()
+            sources.append(self.names)
+        except DataError:
+            pass
+        try:
+            sources.append(self._load_krx_names())
+        except DataError:
+            pass
+        merged={}
+        for source in sources:
+            for code,name in source.items():
+                if name:
+                    merged.setdefault(code,name)
+        if merged:
+            matches=[{"code":c,"name":n} for c,n in merged.items()
+                     if q in re.sub(r"\s+", "", n).casefold() or q==c.casefold()]
+            exact=[r for r in matches if q in (r["code"].casefold(),re.sub(r"\s+", "",r["name"]).casefold())]
             if exact or matches:
                 return exact or matches[:30]
-        # 종목 검색은 시세 API 장애와 완전히 분리합니다.
-        # DART 목록을 읽지 못한 경우, 6자리 코드는 그대로 후보로 허용하고
-        # 종목명 검색은 실패 이유를 명확히 표시합니다.
-        if re.fullmatch(r"[0-9]{6}", query.strip()):
-            return [{"code": query.strip(), "name": query.strip()}]
-        raise DataError("종목명 검색용 OpenDART 기업 목록을 읽지 못했습니다. DART 연결을 확인하거나 6자리 종목코드로 검색하세요.")
+        raw=query.strip().upper()
+        if re.fullmatch(r"[0-9A-Z]{6}",raw):
+            return [{"code":raw,"name":merged.get(raw,raw)}]
+        raise DataError("종목명 검색용 공식 종목 목록을 불러오지 못했습니다. DART 또는 KRX 연결 진단을 확인하세요.")
 
     def search_prices(self, query):
         """Search the smaller price response without downloading DART's directory."""
