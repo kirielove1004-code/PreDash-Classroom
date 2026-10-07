@@ -102,7 +102,7 @@ except FileNotFoundError:
 PUBLIC_API_KEYS = ('DART_CRTFC_KEY','DATA_GO_KR_SERVICE_KEY','KRX_AUTH_KEY','CUSTOMS_API_KEY')
 
 PERSIST_KEY = 'predash_browser_state_v1'
-PERSIST_PAGES = {'오늘의 점검','관심종목','투자 근거','내 계좌','모의투자','매매 연습','매매 습관','연결 설정'}
+PERSIST_PAGES = {'오늘의 점검','관심종목','투자 근거','내 계좌','모의투자','매매 연습','매매 습관','연결 설정','투자 후보'}
 
 def load_browser_state():
     """Restore non-secret working state from this browser's localStorage."""
@@ -134,6 +134,10 @@ def load_browser_state():
     pick=str(state.get('decision_pick') or '').strip()
     if re.fullmatch(r'[0-9]{6}',pick) and 'decision_pick' not in st.session_state:
         st.session_state.decision_pick=pick
+    if state.get('opportunity_backup') and 'opportunity_records' not in st.session_state:
+        from predash.opportunities import restore_records, ResearchError
+        try:st.session_state.opportunity_records=restore_records(state['opportunity_backup'])
+        except ResearchError:pass
     paper=state.get('paper_account')
     if isinstance(paper,dict) and 'paper_account' not in st.session_state:
         try:
@@ -149,7 +153,11 @@ def persist_browser_state():
         'watch_names':clean_names(st.session_state.get('watch_names',{}),clean_codes(st.session_state.get('watch_codes',[]))),
         'decision_pick':st.session_state.get('decision_pick'),
         'paper_account':st.session_state.get('paper_account'),
+        'opportunity_backup':None,
     }
+    if st.session_state.get('opportunity_records'):
+        from predash.opportunities import export_records
+        state['opportunity_backup']=export_records(st.session_state.opportunity_records)
     try:
         payload=json.dumps(state,ensure_ascii=False,separators=(',',':'))
     except (TypeError,ValueError):
@@ -605,11 +613,11 @@ with st.sidebar:
     st.link_button('교육자료', 'https://stock-dash-11a.streamlit.app/')
     st.link_button('소통 게시판', 'https://etf2x.com/learn/live')
     st.html('<div class="pd-brand-note">나의 투자 흐름을 읽는 공간</div><div class="pd-side-label">투자 워크스페이스</div>')
-    page=st.radio('메뉴',['오늘의 점검','관심종목','투자 근거','내 계좌','모의투자','매매 연습','매매 습관','연결 설정'],label_visibility='collapsed',key='navigation',
+    page=st.radio('메뉴',['오늘의 점검','관심종목','투자 근거','내 계좌','모의투자','매매 연습','매매 습관','연결 설정','투자 후보'],label_visibility='collapsed',key='navigation',
         index=0 if all(account_settings()[k] for k in ('key','secret')) else 1,
         format_func=lambda item:{'오늘의 점검':'01  투자 대시보드','내 계좌':'04  내 계좌 · 보유종목',
             '관심종목':'02  관심종목 분석','매매 습관':'07  매매 기록 · 습관',
-            '모의투자':'05  모의투자 계좌','매매 연습':'06  매매 연습','연결 설정':'08  데이터 연결','투자 근거':'03  투자 근거 · 비교 차트'}[item])
+            '모의투자':'05  모의투자 계좌','매매 연습':'06  매매 연습','연결 설정':'08  데이터 연결','투자 근거':'03  투자 근거 · 비교 차트','투자 후보':'09  투자 후보 · 가치 분석표'}[item])
     st.divider()
     large_text=st.toggle('글자 크게 보기',value=st.query_params.get('text','')=='large')
     if large_text:st.query_params['text']='large'
@@ -656,7 +664,11 @@ def render_empty_dashboard(include_market=True):
     st.html(compact_dashboard({'positions':[]},{},None,'체결 기록을 가져오면 표시됩니다.'))
     st.caption('계좌 금액과 종목은 조회 후 표시됩니다.')
 
-if page=='모의투자':
+if page=='투자 후보':
+    from predash.opportunities_ui import render_opportunities
+    render_opportunities(official_client(),password)
+    st.stop()
+elif page=='모의투자':
     st.title('키움증권 모의투자 계좌')
     st.html('<div class="pd-intro">키움 모의계좌를 연결해 잔고와 실제 모의 체결 기록을 확인하세요.</div>')
     st.caption('키움증권 모의투자 서버 · 모의계좌 데이터 · 실전 잔고와 별도 보관')
