@@ -36,6 +36,26 @@ def connection_form():
     st.caption('키움증권 REST API App Key·App Secret을 연결합니다. 장기 사용은 Streamlit Secrets, 일회성 테스트는 현재 세션 입력을 사용합니다.')
     saved_real=account_settings('real')
     saved_demo=account_settings('demo')
+
+    with st.expander('키움 IP 등록 도움',expanded=False):
+        st.write('키움 8050 오류는 App Key/Secret보다 먼저 API 요청을 보내는 서버 IP가 등록되어야 한다는 뜻입니다.')
+        if st.button('현재 Streamlit 서버 공인 IP 확인',use_container_width=True,key='show_kiwoom_server_ip'):
+            try:
+                ip_resp=requests.get('https://api.ipify.org',params={'format':'json'},timeout=(4,8))
+                current_ip=str(ip_resp.json().get('ip','')).strip() if ip_resp.ok else ''
+            except (requests.RequestException,ValueError):
+                current_ip=''
+            if current_ip:
+                st.session_state.kiwoom_server_ip=current_ip
+            else:
+                st.error('현재 서버 공인 IP를 확인하지 못했습니다. 잠시 후 다시 시도하세요.')
+        current_ip=st.session_state.get('kiwoom_server_ip','')
+        if current_ip:
+            st.write('키움에 우선 등록할 현재 서버 공인 IP')
+            st.code(current_ip,language=None)
+            st.caption('키움 REST API → 계좌 App Key 관리 → IP 등록에서 이 IP를 추가하세요. 등록 후 같은 화면에서 Secrets 연결 실제 확인을 다시 누르세요.')
+        st.warning('Streamlit Community Cloud는 여러 공인 IP를 사용할 수 있고 목록은 변경될 수 있습니다. 현재 IP 1개 등록은 빠른 해결책이지만 재배포/서버 이동 후 다시 8050이 날 수 있습니다.')
+        st.link_button('키움 REST API · App Key/IP 관리','https://openapi.kiwoom.com/',use_container_width=True)
     persistent_mode='real' if saved_real.get('key') and saved_real.get('secret') else 'demo' if saved_demo.get('key') and saved_demo.get('secret') else None
     if st.session_state.get('classroom_credentials') or persistent_mode:
         active=st.session_state.get('classroom_credentials',{}).get('mode') or persistent_mode
