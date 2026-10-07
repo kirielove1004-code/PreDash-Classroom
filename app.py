@@ -39,7 +39,10 @@ from predash.dashboard import overview, latest_held_buy
 from predash.visuals import compact_dashboard
 from predash.decision import comparison, brief, export_review, EvidenceError
 from predash.customs import exports, CustomsError
-from predash.krx import daily_activity, KRXError
+import predash.krx as krx_module
+if not hasattr(krx_module,'diagnose_krx'):
+    krx_module=importlib.reload(krx_module)
+daily_activity, KRXError, diagnose_krx = krx_module.daily_activity, krx_module.KRXError, krx_module.diagnose_krx
 import predash.watchlist as watch_module
 if not hasattr(watch_module,'backup_names'):
     watch_module=importlib.reload(watch_module)
@@ -356,41 +359,7 @@ def diagnose_public_api(label,key_name):
             return failures[-1] if failures else _diagnostic_result('인증 실패','공공데이터 주식시세 응답을 확인하지 못했습니다.')
 
         if key_name=='KRX_AUTH_KEY':
-            today=datetime.now(ZoneInfo('Asia/Seoul')).date()
-            day=today-timedelta(days=1)
-            while day.weekday()>=5:day-=timedelta(days=1)
-            tests=(
-                ('일별 거래정보','https://data-dbg.krx.co.kr/svc/apis/sto/stk_bydd_trd'),
-                ('종목 기본정보','https://data-dbg.krx.co.kr/svc/apis/sto/stk_isu_base_info'),
-            )
-            failures=[]
-            for test_name,url in tests:
-                r=requests.get(url,headers={'AUTH_KEY':key},
-                    params={'basDd':day.strftime('%Y%m%d')},timeout=(5,15))
-                code='';message=''
-                try:
-                    data=r.json();rows=data.get('OutBlock_1')
-                    code=str(data.get('resultCode') or data.get('code') or '')
-                    message=str(data.get('resultMsg') or data.get('message') or data.get('msg') or '')
-                except ValueError:
-                    rows=None;message=_response_text(r)
-                if r.ok and isinstance(rows,list):
-                    return _diagnostic_result('정상',f'실제 KRX {test_name} 응답에 성공했습니다.','',f'HTTP 200 · {test_name}')
-                failures.append((test_name,_classify_gateway_failure('KRX',r,code=code,message=message)))
-            if failures and all(item[1]['status']=='키 오류' for item in failures):
-                try:
-                    fallback=daily_activity('', '005930', today)
-                    if fallback and fallback.get('date'):
-                        return _diagnostic_result('대체 사용 중',
-                            'KRX OPEN API 인증키는 HTTP 401로 거부됐지만, 대시보드의 거래량·거래대금·시가총액 조회는 KRX 보조 경로로 사용할 수 있습니다.',
-                            '대시보드 사용은 계속할 수 있습니다. KRX OPEN API 직접연결이 필요할 때만 KRX에서 활성 인증키와 주식 API 이용신청을 다시 확인하세요.',
-                            'OPEN API 401 · 보조 KRX 조회 성공 '+str(fallback.get('date')))
-                except KRXError:
-                    pass
-                return _diagnostic_result('키 오류','KRX의 거래정보와 종목기본정보가 모두 HTTP 401로 인증키를 거부했습니다.',
-                    'KRX OPEN API에서 현재 활성 인증키를 다시 복사하고, 사용할 주식 API의 이용신청 상태를 확인한 뒤 KRX_AUTH_KEY를 교체하세요.',
-                    ' · '.join(f"{name}:{res.get('evidence','')}" for name,res in failures))
-            return failures[0][1] if failures else _diagnostic_result('인증 실패','KRX 진단 결과를 확인하지 못했습니다.')
+            return diagnose_krx(key,datetime.now(ZoneInfo('Asia/Seoul')).date())
 
         if key_name=='CUSTOMS_API_KEY':
             end=(datetime.now()-timedelta(days=35)).strftime('%Y%m')
@@ -1207,6 +1176,8 @@ elif page=='연결 설정':
         else:
             renderer=st.error
         renderer(msg)
+        if result.get('services'):
+            st.dataframe([{'서비스':x['service'],'상태':x['status'],'HTTP':x['http'],'조회 기준일':x['date']} for x in result['services']],hide_index=True,use_container_width=True)
         if result.get('evidence'):st.caption('판정 근거 · '+result['evidence'])
         if result.get('action'):st.caption('해결 방법 · '+result['action'])
 

@@ -50,6 +50,7 @@ class FinancialPeriodTests(unittest.TestCase):
 class KRXValidationTests(unittest.TestCase):
     def test_exact_code_and_date_only(self):
         class Response:
+            status_code=200
             def raise_for_status(self):pass
             def json(self):return {'OutBlock_1':[
                 {'ISU_SRT_CD':'005930','BAS_DD':'20260929','ACC_TRDVOL':'1,234','ACC_TRDVAL':'123,000,000','MKTCAP':'1,000,000,000'},
