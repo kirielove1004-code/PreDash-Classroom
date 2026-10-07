@@ -9,7 +9,3 @@ KIWOOM_REAL_APP_KEY = ""
 KIWOOM_REAL_APP_SECRET = ""
 KIWOOM_DEMO_APP_KEY = ""
 KIWOOM_DEMO_APP_SECRET = ""
-
-# Private investment research tab
-GEMINI_API_KEY = ""
-GEMINI_MODEL = "gemini-2.5-flash"
