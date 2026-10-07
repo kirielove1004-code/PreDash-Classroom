@@ -78,7 +78,9 @@ def _gemini_models(key,get=None):
             continue
         name=str(item.get('name') or '').removeprefix('models/')
         methods=item.get('supportedGenerationMethods') or []
-        if name.startswith('gemini-') and ('generateContent' in methods or not methods):
+        low=name.lower()
+        excluded=('image','imagen','tts','audio','live','embedding','robotics','computer-use')
+        if name.startswith('gemini-') and ('generateContent' in methods or not methods) and not any(x in low for x in excluded):
             result.append(name)
     return result
 
@@ -87,12 +89,13 @@ def _model_priority(name):
     low=name.lower()
     # Prefer stable flash models for this search/discovery workflow, then pro.
     preview=1 if any(x in low for x in ('preview','exp','experimental')) else 0
-    flash=0 if 'flash' in low else 1
+    lite=0 if 'flash-lite' in low else 1
+    flash=0 if ('flash' in low and 'flash-lite' not in low) else 1
     pro=0 if 'pro' in low else 1
     # Newer numeric families sort ahead of older ones without hard-coding one exact id.
     nums=[int(x) for x in re.findall(r'\\d+',low)[:3]]
     version=tuple([-n for n in nums]+[0]*(3-len(nums)))
-    return (preview,flash,pro,*version,name)
+    return (preview,lite,flash,pro,*version,name)
 
 
 def call_gemini(key,model,prompt,post=None,get=None):
@@ -156,16 +159,17 @@ def call_gemini(key,model,prompt,post=None,get=None):
             last_text=str(((body.get('error') or {}).get('message')) or '')[:500]
         except (ValueError,AttributeError):
             last_text=''
-        # 404 means retired/unavailable model. 400 can mean this model does not
-        # support Google Search grounding. Try another accessible Gemini model.
-        if response.status_code in (400,404) and len(candidates)>1:
+        # Try another model when the selected model is unavailable, lacks Search
+        # support, or has no quota. 429 is often model-specific (for example a
+        # preview/image model can have free-tier limit 0 while a text model works).
+        if response.status_code in (400,404,429) and len(candidates)>1:
             continue
         break
 
-    hints={400:'Google Search를 지원하는 모델을 자동 탐색했지만 요청을 처리하지 못했습니다.',
+    hints={400:'Google Search를 지원하는 텍스트 모델을 자동 탐색했지만 요청을 처리하지 못했습니다.',
            401:'API 키 인증을 확인하세요.',403:'API 키 권한/API 사용 설정을 확인하세요.',
-           404:'현재 API 키에서 사용 가능한 Gemini 모델을 찾지 못했습니다.',
-           429:'요청 한도 또는 결제 상태를 확인하세요.'}
+           404:'현재 API 키에서 사용 가능한 Gemini 텍스트 모델을 찾지 못했습니다.',
+           429:'사용 가능한 텍스트 모델을 순차 시도했지만 모두 할당량 제한에 걸렸습니다. Google AI Studio의 사용량/결제 상태를 확인하세요.'}
     detail=hints.get(last_status,'제공 서버에서 정상 응답을 받지 못했습니다.')
     if last_status in (400,404) and available:
         detail+=f" 현재 키에서 확인된 generateContent 모델 {len(available)}개 중 자동 대체도 실패했습니다."
