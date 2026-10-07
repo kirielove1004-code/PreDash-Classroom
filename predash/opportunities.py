@@ -57,46 +57,119 @@ def parse_json(text):
         raise ResearchError('AI 응답은 JSON 객체여야 합니다.')
     return data
 
-def call_gemini(key,model,prompt,post=None):
+def _gemini_models(key,get=None):
+    """Return currently available Gemini generateContent model ids for this API key."""
+    import requests
+    getter=get or requests.get
+    try:
+        response=getter('https://generativelanguage.googleapis.com/v1beta/models',
+            headers={'x-goog-api-key':key},timeout=(8,30))
+    except requests.RequestException:
+        return []
+    if response.status_code!=200:
+        return []
+    try:
+        items=response.json().get('models') or []
+    except (ValueError,AttributeError):
+        return []
+    result=[]
+    for item in items:
+        if not isinstance(item,dict):
+            continue
+        name=str(item.get('name') or '').removeprefix('models/')
+        methods=item.get('supportedGenerationMethods') or []
+        if name.startswith('gemini-') and ('generateContent' in methods or not methods):
+            result.append(name)
+    return result
+
+
+def _model_priority(name):
+    low=name.lower()
+    # Prefer stable flash models for this search/discovery workflow, then pro.
+    preview=1 if any(x in low for x in ('preview','exp','experimental')) else 0
+    flash=0 if 'flash' in low else 1
+    pro=0 if 'pro' in low else 1
+    # Newer numeric families sort ahead of older ones without hard-coding one exact id.
+    nums=[int(x) for x in re.findall(r'\\d+',low)[:3]]
+    version=tuple([-n for n in nums]+[0]*(3-len(nums)))
+    return (preview,flash,pro,*version,name)
+
+
+def call_gemini(key,model,prompt,post=None,get=None):
     if not str(key).strip():
         raise ResearchError('Gemini API 키를 입력하세요.')
-    if not re.fullmatch(r'gemini-[a-zA-Z0-9.-]+',str(model)):
+    requested=str(model or '').strip()
+    if requested and requested!='auto' and not re.fullmatch(r'gemini-[a-zA-Z0-9._-]+',requested):
         raise ResearchError('Gemini 모델 이름을 확인하세요.')
+
     import requests
-    try:
-        response=(post or requests.post)(
-            f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent',
-            headers={'x-goog-api-key':key,'Content-Type':'application/json'},
-            json={'contents':[{'parts':[{'text':prompt}]}], 'tools':[{'google_search':{}}],
-                  'generationConfig':{'temperature':0.2,'maxOutputTokens':18000}}, timeout=(10,150))
-    except requests.RequestException:
-        raise ResearchError('Gemini 연결에 실패했습니다. 잠시 후 다시 실행하세요.') from None
-    if response.status_code!=200:
-        hints={400:'모델의 Google Search 지원 및 요청 설정을 확인하세요.',
-               401:'API 키 인증을 확인하세요.',403:'API 키 권한을 확인하세요.',
-               404:'사용 가능한 모델 이름을 확인하세요.',429:'요청 한도 또는 결제를 확인하세요.'}
-        raise ResearchError(f'Gemini HTTP {response.status_code} · '+hints.get(response.status_code,'제공 서버에서 정상 응답을 받지 못했습니다.'))
-    try:
-        body=response.json()
-        candidate=body['candidates'][0]
-        if candidate.get('finishReason') not in (None,'STOP'):
-            raise ResearchError('AI 응답이 완료되지 않았습니다. 종목 수를 줄이거나 다시 실행하세요.')
-        text=''.join(p.get('text','') for p in candidate['content']['parts'] if not p.get('thought'))
-        data=parse_json(text)
-        grounding=candidate.get('groundingMetadata') or {}
-    except (KeyError,IndexError,TypeError,ValueError) as exc:
-        if isinstance(exc,ResearchError):raise
-        raise ResearchError('Gemini 응답 형식을 확인하지 못했습니다.') from None
-    sources=[]
-    for i,chunk in enumerate(grounding.get('groundingChunks') or []):
-        web=chunk.get('web') or {};url=safe_url(web.get('uri'))
-        if url:sources.append({'index':i,'url':url,'title':str(web.get('title',''))[:300]})
-    if not sources:
-        raise ResearchError('검색 출처가 반환되지 않아 분석을 보류했습니다. 다시 실행하세요.')
-    # Preserve provider citations and required Search Suggestions for display.
-    return {'data':data,'sources':sources,'supports':grounding.get('groundingSupports') or [],
-            'search_html':str((grounding.get('searchEntryPoint') or {}).get('renderedContent','')),
-            'queries':grounding.get('webSearchQueries') or [],'model':model}
+    poster=post or requests.post
+    available=_gemini_models(key,get=get)
+    candidates=[]
+    if requested and requested!='auto':
+        candidates.append(requested)
+    # If the saved model was retired/renamed, automatically try models the key can
+    # actually access instead of failing the whole investment-candidate workflow.
+    for name in sorted(available,key=_model_priority):
+        if name not in candidates:
+            candidates.append(name)
+    if not candidates:
+        candidates=[requested] if requested and requested!='auto' else ['gemini-2.5-flash']
+
+    last_status=None;last_text=''
+    for chosen in candidates:
+        try:
+            response=poster(
+                f'https://generativelanguage.googleapis.com/v1beta/models/{chosen}:generateContent',
+                headers={'x-goog-api-key':key,'Content-Type':'application/json'},
+                json={'contents':[{'parts':[{'text':prompt}]}], 'tools':[{'google_search':{}}],
+                      'generationConfig':{'temperature':0.2,'maxOutputTokens':18000}}, timeout=(10,150))
+        except requests.RequestException:
+            raise ResearchError('Gemini 연결에 실패했습니다. 잠시 후 다시 실행하세요.') from None
+
+        if response.status_code==200:
+            try:
+                body=response.json()
+                candidate=body['candidates'][0]
+                if candidate.get('finishReason') not in (None,'STOP'):
+                    raise ResearchError('AI 응답이 완료되지 않았습니다. 종목 수를 줄이거나 다시 실행하세요.')
+                text=''.join(p.get('text','') for p in candidate['content']['parts'] if not p.get('thought'))
+                data=parse_json(text)
+                grounding=candidate.get('groundingMetadata') or {}
+            except (KeyError,IndexError,TypeError,ValueError) as exc:
+                if isinstance(exc,ResearchError):raise
+                raise ResearchError('Gemini 응답 형식을 확인하지 못했습니다.') from None
+            sources=[]
+            for i,chunk in enumerate(grounding.get('groundingChunks') or []):
+                web=chunk.get('web') or {};url=safe_url(web.get('uri'))
+                if url:sources.append({'index':i,'url':url,'title':str(web.get('title',''))[:300]})
+            if not sources:
+                raise ResearchError('검색 출처가 반환되지 않아 분석을 보류했습니다. 다시 실행하세요.')
+            return {'data':data,'sources':sources,'supports':grounding.get('groundingSupports') or [],
+                    'search_html':str((grounding.get('searchEntryPoint') or {}).get('renderedContent','')),
+                    'queries':grounding.get('webSearchQueries') or [],'model':chosen,
+                    'requested_model':requested or 'auto'}
+
+        last_status=response.status_code
+        try:
+            body=response.json()
+            last_text=str(((body.get('error') or {}).get('message')) or '')[:500]
+        except (ValueError,AttributeError):
+            last_text=''
+        # 404 means retired/unavailable model. 400 can mean this model does not
+        # support Google Search grounding. Try another accessible Gemini model.
+        if response.status_code in (400,404) and len(candidates)>1:
+            continue
+        break
+
+    hints={400:'Google Search를 지원하는 모델을 자동 탐색했지만 요청을 처리하지 못했습니다.',
+           401:'API 키 인증을 확인하세요.',403:'API 키 권한/API 사용 설정을 확인하세요.',
+           404:'현재 API 키에서 사용 가능한 Gemini 모델을 찾지 못했습니다.',
+           429:'요청 한도 또는 결제 상태를 확인하세요.'}
+    detail=hints.get(last_status,'제공 서버에서 정상 응답을 받지 못했습니다.')
+    if last_status in (400,404) and available:
+        detail+=f" 현재 키에서 확인된 generateContent 모델 {len(available)}개 중 자동 대체도 실패했습니다."
+    raise ResearchError(f'Gemini HTTP {last_status} · {detail}' + (f' · {last_text}' if last_text else ''))
 
 RULES = '''한국어로 답하라. KOSPI/KOSDAQ 상장 보통주만 다룬다.
 KRX, DART, 기업 IR 및 증권사 원문을 우선 검색하라. 기준일과 조회일을 구분하라.
