@@ -60,7 +60,7 @@ def render_opportunities(provider,password):
         try:saved_key=str(st.secrets.get('GEMINI_API_KEY',''));saved_model=str(st.secrets.get('GEMINI_MODEL','gemini-2.5-flash'))
         except FileNotFoundError:saved_key='';saved_model='gemini-2.5-flash'
         key=key or saved_key or os.getenv('GEMINI_API_KEY','')
-        model=st.text_input('Gemini 모델',value=saved_model,key='opportunity_model')
+        model=st.text_input('Gemini 모델',value=saved_model,key='opportunity_model',help='저장된 모델이 종료되었거나 현재 키에서 사용할 수 없으면 앱이 사용 가능한 Gemini generateContent 모델을 자동 탐색해 대체합니다. auto 입력도 가능합니다.')
         st.caption('Google Search 지원 모델을 사용하세요. 버튼을 누를 때만 API를 호출합니다. 후보 발굴 1회 + 선택 종목당 1회 분석이며 제공사의 사용량 요금이 적용될 수 있습니다.')
     discover,analyze,backups=st.tabs(['1  섹터에서 후보 발굴','2  종목 분석 실행','3  분석 보관'])
     with discover:
@@ -72,6 +72,8 @@ def render_opportunities(provider,password):
                     packet=call_gemini(key,model,discovery_prompt(sector,count,today_kst()))
                     candidates=discovery_candidates(packet,count)
                 st.session_state.opportunity_discovery={'packet':packet,'candidates':candidates,'asof':today_kst().isoformat()}
+                if packet.get('model') and packet.get('model')!=model:
+                    st.success('Gemini 모델 자동 대체 · '+packet['model'])
             except ResearchError as exc:st.error(str(exc))
         discovery=st.session_state.get('opportunity_discovery')
         if discovery:
