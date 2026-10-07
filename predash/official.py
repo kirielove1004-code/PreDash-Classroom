@@ -426,49 +426,127 @@ class Official:
         return value
 
     def latest_period_metrics(self, code, asof=None):
-        """Latest filed interim cumulative IS, compared with the same prior-year period."""
+        """Latest filed interim cumulative IS, compared with the same prior-year period.
+
+        Use the full-account endpoint first, then the simpler main-account endpoint.
+        This avoids showing '보류' merely because one DART XBRL account id/name differs.
+        """
         asof=asof or date.today()
         corp=self.corp(code)
+
+        revenue_ids={'ifrs-full_Revenue','ifrs_Revenue'}
+        profit_ids={
+            'dart_OperatingIncomeLoss',
+            'ifrs-full_ProfitLossFromOperatingActivities',
+            'ifrs_ProfitLossFromOperatingActivities',
+        }
+
+        def norm_name(value):
+            text=re.sub(r'\\s+','',str(value or ''))
+            text=re.sub(r'^[0-9IVXⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.．)]','',text)
+            return text.replace('(손실)','손실')
+
+        def is_revenue(row):
+            aid=str(row.get('account_id') or '').strip()
+            name=norm_name(row.get('account_nm'))
+            return aid in revenue_ids or name in {
+                '매출액','수익(매출액)','영업수익','매출','매출액및지분법손익'
+            }
+
+        def is_profit(row):
+            aid=str(row.get('account_id') or '').strip()
+            name=norm_name(row.get('account_nm'))
+            return aid in profit_ids or name in {
+                '영업이익','영업이익손실','영업손실','영업손익'
+            } or name.startswith('영업이익')
+
+        def values(row,quarter):
+            current=number(row.get('thstrm_add_amount'))
+            previous=number(row.get('frmtrm_add_amount'))
+            # Main-account responses and some issuer XBRL filings do not expose
+            # *_add_amount consistently. For those, thstrm/frmtrm are the best
+            # official values available for the same report period.
+            if current is None:
+                current=number(row.get('thstrm_amount'))
+            if previous is None:
+                previous=number(row.get('frmtrm_amount'))
+            if quarter==1:
+                previous=number(row.get('frmtrm_q_amount')) or previous
+            return current,previous
+
+        def parse_rows(rows,basis,quarter):
+            filtered=[r for r in rows if (not r.get('fs_div') or r.get('fs_div')==basis)
+                      and (not r.get('sj_div') or r.get('sj_div') in ('IS','CIS'))]
+            rev_row=next((r for r in filtered if is_revenue(r)),None)
+            op_row=next((r for r in filtered if is_profit(r)),None)
+            if not rev_row or not op_row:
+                return None
+            revenue,prior_revenue=values(rev_row,quarter)
+            profit,prior_profit=values(op_row,quarter)
+            if revenue is None or profit is None:
+                return None
+
+            # Standalone quarter values are optional. Keep the cumulative headline
+            # usable even when DART omits quarter-only comparison fields.
+            qr=number(rev_row.get('thstrm_amount'))
+            qpr=number(rev_row.get('frmtrm_q_amount'))
+            qp=number(op_row.get('thstrm_amount'))
+            qpp=number(op_row.get('frmtrm_q_amount'))
+            standalone_result={
+                'revenue':qr/1e8 if qr is not None else None,
+                'profit':qp/1e8 if qp is not None else None,
+                'prior_revenue':qpr/1e8 if qpr is not None else None,
+                'prior_profit':qpp/1e8 if qpp is not None else None,
+                'growth_pct':(qp-qpp)/abs(qpp)*100 if qp is not None and qpp not in (None,0) else None,
+                'revenue_growth_pct':(qr-qpr)/abs(qpr)*100 if qr is not None and qpr not in (None,0) else None,
+                'margin_pct':qp/qr*100 if qp is not None and qr not in (None,0) else None,
+            }
+            return {
+                'standalone':standalone_result,
+                'revenue':revenue/1e8,
+                'profit':profit/1e8,
+                'prior_revenue':prior_revenue/1e8 if prior_revenue is not None else None,
+                'prior_profit':prior_profit/1e8 if prior_profit is not None else None,
+                'revenue_growth_pct':(revenue-prior_revenue)/abs(prior_revenue)*100 if prior_revenue not in (None,0) else None,
+                'growth_pct':(profit-prior_profit)/abs(prior_profit)*100 if prior_profit not in (None,0) else None,
+                'margin_pct':profit/revenue*100 if revenue else None,
+                'receipt':str(op_row.get('rcept_no') or rev_row.get('rcept_no') or ''),
+            }
+
+        attempts=[]
         for year in (asof.year,asof.year-1):
             for quarter,report_code in ((3,'11014'),(2,'11012'),(1,'11013')):
+                # Full-account response first.
                 for basis in ('CFS','OFS'):
-                    response=self.dart('fnlttSinglAcntAll.json',corp_code=corp,
-                        bsns_year=str(year),reprt_code=report_code,fs_div=basis)
-                    if not response:continue
-                    rows=response.get('list') or []
-                    def pair(ids,names):
-                        for row in rows:
-                            if row.get('sj_div') not in ('IS','CIS'):continue
-                            if row.get('account_id') not in ids and row.get('account_nm') not in names:continue
-                            current=number(row.get('thstrm_add_amount'))
-                            previous=number(row.get('frmtrm_add_amount'))
-                            if quarter==1:
-                                if current is None:current=number(row.get('thstrm_amount'))
-                                if previous is None:previous=number(row.get('frmtrm_q_amount'))
-                            if current is not None:return current,previous,row.get('rcept_no','')
-                        return None,None,''
-                    revenue,prior_revenue,receipt=pair(['ifrs-full_Revenue'],['매출액','수익(매출액)'])
-                    profit,prior_profit,profit_receipt=pair(['dart_OperatingIncomeLoss'],['영업이익','영업이익(손실)'])
-                    if revenue is None or profit is None:continue
-                    def standalone(ids,names):
-                        for row in rows:
-                            if row.get('sj_div') in ('IS','CIS') and (row.get('account_id') in ids or row.get('account_nm') in names):
-                                return number(row.get('thstrm_amount')),number(row.get('frmtrm_q_amount'))
-                        return None,None
-                    qr,qpr=standalone(['ifrs-full_Revenue'],['매출액','수익(매출액)'])
-                    qp,qpp=standalone(['dart_OperatingIncomeLoss'],['영업이익','영업이익(손실)'])
-                    standalone_result={'revenue':qr/1e8 if qr is not None else None,'profit':qp/1e8 if qp is not None else None,
-                        'prior_revenue':qpr/1e8 if qpr is not None else None,'prior_profit':qpp/1e8 if qpp is not None else None,
-                        'growth_pct':(qp/qpp-1)*100 if qp is not None and qpp is not None and qpp>0 else None,
-                        'revenue_growth_pct':(qr/qpr-1)*100 if qr is not None and qpr is not None and qpr>0 else None,
-                        'margin_pct':qp/qr*100 if qp is not None and qr is not None and qr>0 else None}
-                    return {'standalone':standalone_result,'revenue_growth_pct':(revenue/prior_revenue-1)*100 if prior_revenue and prior_revenue>0 else None,'year':year,'quarter':quarter,'basis':basis,'revenue':revenue/1e8,
-                            'profit':profit/1e8,'prior_revenue':prior_revenue/1e8 if prior_revenue is not None else None,
-                            'prior_profit':prior_profit/1e8 if prior_profit is not None else None,
-                            'growth_pct':(profit-prior_profit)/abs(prior_profit)*100 if prior_profit and prior_profit>0 else None,
-                            'margin_pct':profit/revenue*100 if revenue>0 else None,
-                            'receipt':profit_receipt or receipt,'fetched':asof.isoformat()}
-        raise DataError('비교 가능한 최근 분기·반기 누적 실적을 찾지 못했습니다.')
+                    try:
+                        response=self.dart('fnlttSinglAcntAll.json',corp_code=corp,
+                            bsns_year=str(year),reprt_code=report_code,fs_div=basis)
+                    except DataError as exc:
+                        attempts.append(f'{year}Q{quarter} {basis} 전체계정: {exc}')
+                        response=None
+                    if response:
+                        parsed=parse_rows(response.get('list') or [],basis,quarter)
+                        if parsed:
+                            return {'year':year,'quarter':quarter,'basis':basis,**parsed,'fetched':asof.isoformat()}
+
+                # Fallback: DART's main-account endpoint includes CFS/OFS rows and
+                # is more tolerant of issuer-specific XBRL taxonomy differences.
+                try:
+                    simple=self.dart('fnlttSinglAcnt.json',corp_code=corp,
+                        bsns_year=str(year),reprt_code=report_code)
+                except DataError as exc:
+                    attempts.append(f'{year}Q{quarter} 주요계정: {exc}')
+                    simple=None
+                if simple:
+                    rows=simple.get('list') or []
+                    for basis in ('CFS','OFS'):
+                        parsed=parse_rows(rows,basis,quarter)
+                        if parsed:
+                            parsed['basis']=basis
+                            return {'year':year,'quarter':quarter,**parsed,'fetched':asof.isoformat()}
+
+        detail=' / '.join(attempts[-3:]) if attempts else '최근 공시에서 매출·영업이익 계정을 찾지 못했습니다.'
+        raise DataError('비교 가능한 최근 분기·반기 누적 실적을 찾지 못했습니다. '+detail)
 
     def business_excerpt(self, receipt):
         if not receipt:
