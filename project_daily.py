@@ -30,10 +30,72 @@ def tracked(cfg):
     return list(dict.fromkeys(codes))
 
 
+
+def discover_universe(limit=24):
+    """Select a transparent market-cap cohort, not a claimed full-market screen."""
+    try:
+        import FinanceDataReader as fdr
+        listing = fdr.StockListing("KRX")
+        if listing is None or listing.empty:
+            raise ValueError("종목 목록이 비어 있음")
+        column = "Code" if "Code" in listing.columns else "Symbol"
+        cap = next((x for x in ("Marcap", "MarketCap", "Market Cap") if x in listing.columns), None)
+        if not cap:
+            raise ValueError("시가총액 기준 열 없음")
+        listing = listing.copy()
+        listing[cap] = __import__("pandas").to_numeric(listing[cap], errors="coerce")
+        listing = listing.sort_values(cap, ascending=False)
+        codes = valid_codes(listing[column].astype(str).tolist())
+        return codes[:limit]
+    except Exception as exc:
+        raise RuntimeError("후보군 자동 검색에 실패했습니다: " + str(exc)[:180]) from exc
+
+
+def rank_candidates(project, stocks, universe=None):
+    """Only quantitative shortlist: never claim full free-text guideline compliance."""
+    if not project.get("instructions_verified") or not project.get("instructions", "").strip():
+        return [], "지침 원문이 검증 등록되지 않았습니다."
+    minimum = project.get("minimum_operating_margin_pct")
+    if minimum is None:
+        return [], "정량 기준이 없어 자동 순위를 만들지 않습니다. 지침에 최소 영업이익률을 설정하세요."
+    allowed = set(universe or [])
+    ranked = []
+    for stock in stocks:
+        if allowed and stock.get("code") not in allowed:
+            continue
+        financial = stock.get("financial") or {}
+        price = stock.get("price") or {}
+        margin = financial.get("operating_margin")
+        if stock.get("issues") or margin is None or not price.get("as_of"):
+            continue
+        if margin < float(minimum):
+            continue
+        ranked.append({
+            "code": stock["code"], "name": stock.get("name", stock["code"]),
+            "operating_margin": margin,
+            "financial_year": financial.get("year"),
+            "basis": financial.get("basis"),
+            "close": price.get("close"),
+            "price_date": price.get("as_of"),
+            "reason": "공식 최근 결산 영업이익률 기준 통과",
+        })
+    ranked.sort(key=lambda x: (-x["operating_margin"], x["code"]))
+    return [{**stock, "rank": index} for index, stock in enumerate(ranked[:3], 1)], None
+
+
 def collect():
     from predash.official import Official, DataError
     cfg = config()
     codes = tracked(cfg)
+    discover_requested = any(p.get("auto_discover") for p in cfg.get("projects", []))
+    universe = []
+    discovery_issue = None
+    if discover_requested:
+        try:
+            universe = discover_universe(24)
+            codes = list(dict.fromkeys(codes + universe))
+        except RuntimeError as exc:
+            discovery_issue = str(exc)
     if not codes:
         raise RuntimeError("등록된 분석 종목이 없습니다. project_daily_config.json을 설정하세요.")
     if not os.getenv("DART_CRTFC_KEY") or not os.getenv("DATA_GO_KR_SERVICE_KEY"):
@@ -76,7 +138,18 @@ def collect():
     # Atomic replacement: preserve old result if collection fails before completion.
     import tempfile
     import os as _os
-    payload = {"checked_at": now, "stocks": result, "count": len(result)}
+    rankings = {}
+    for project in cfg.get("projects", []):
+        scope = universe if project.get("auto_discover") else valid_codes(project.get("stocks", []))
+        top, issue = rank_candidates(project, result, scope)
+        rankings[project.get("name", "")] = {
+            "top3": top, "reason": issue,
+            "universe_size": len(scope),
+            "mode": "시가총액 상위 후보군 자동 검색 (전체 시장 전수 아님)" if project.get("auto_discover") else "등록 종목 내 정량 비교"
+        }
+    payload = {"checked_at": now, "stocks": result, "count": len(result),
+               "candidate_codes": universe, "discovery_issue": discovery_issue,
+               "rankings": rankings}
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=SNAPSHOT.parent, delete=False) as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
         tmp = f.name
@@ -144,7 +217,9 @@ def render_rule_manager(cfg, browser_codes):
                              placeholder="예: 기술 희소성 · 고수익 성장주")
         instruction = st.text_area("분석 지침 원문", value=existing.get("instructions", ""),
                                    height=220, placeholder="판단 기준, 우선순위, 근거 자료, 제외 조건 등을 자유롭게 입력하세요.")
-        stock_codes = st.text_area("대상 종목코드 (6자리, 쉼표 구분)",
+        discovery = st.checkbox("종목을 직접 지정하지 않고 시장에서 후보 자동 검색", value=bool(existing.get("auto_discover", False)))
+        st.caption("자동 검색은 시가총액 상위 최대 24개 종목으로 제한합니다. 전체 KOSPI/KOSDAQ 전수 검색이 아닙니다.")
+        stock_codes = st.text_area("선택 등록 종목코드 (6자리, 쉼표 구분)",
                                    value=", ".join(valid_codes(existing.get("stocks", []))),
                                    placeholder="005380, 267260", height=85)
         threshold_text = st.text_input("최소 영업이익률 (%) · 선택 사항",
@@ -154,7 +229,7 @@ def render_rule_manager(cfg, browser_codes):
     if submitted:
         try:
             codes = _parse_stock_codes(stock_codes)
-            if not name.strip() or not instruction.strip() or not codes:
+            if not name.strip() or not instruction.strip() or (not codes and not discovery):
                 raise ValueError("지침 이름, 지침 원문, 종목코드를 모두 입력하세요.")
             threshold = float(threshold_text) if threshold_text.strip() else None
             if threshold is not None and not -100 <= threshold <= 100:
@@ -162,7 +237,7 @@ def render_rule_manager(cfg, browser_codes):
             edited = dict(cfg)
             edited["projects"] = [dict(p) for p in projects]
             entry = {"name": name.strip(), "instructions": instruction.strip(),
-                     "stocks": [{"code": c} for c in codes],
+                     "stocks": [{"code": c} for c in codes], "auto_discover": discovery,
                      "minimum_operating_margin_pct": threshold,
                      "instructions_verified": True}
             if position == -1:
@@ -232,7 +307,9 @@ def _render_daily_results(cfg, browser_codes):
     st.caption("마지막 자동 수집: " + str(stored.get("checked_at") or "아직 실행되지 않음") + " (한국시간)")
     watch = valid_codes(cfg.get("watchlist_codes", []))
     browser = valid_codes(browser_codes or [])
-    project_codes = {p.get("name", "미분류"): valid_codes(p.get("stocks", [])) for p in cfg.get("projects", [])}
+    project_codes = {p.get("name", "미분류"):
+                     (valid_codes(stored.get("candidate_codes", [])) if p.get("auto_discover") else valid_codes(p.get("stocks", [])))
+                     for p in cfg.get("projects", [])}
     groups = {"전체": list(dict.fromkeys(watch + browser + [c for codes in project_codes.values() for c in codes])),
               "내 관심종목": list(dict.fromkeys(watch + browser)), **project_codes}
     selected = st.selectbox("분석 그룹", list(groups))
@@ -244,6 +321,21 @@ def _render_daily_results(cfg, browser_codes):
     selected_project = next((p for p in cfg.get("projects", []) if p.get("name") == selected), None)
     if selected_project and not selected_project.get("instructions_verified"):
         st.warning("이 프로젝트의 ChatGPT 지침 원문이 아직 검증 등록되지 않았습니다. 재무정보만 표시하며 지침 충족 판정을 하지 않습니다.")
+    ranking = (stored.get("rankings") or {}).get(selected, {})
+    if selected_project and selected_project.get("auto_discover"):
+        st.caption("자동 검색 범위: 시가총액 상위 최대 24개 후보 (전체 시장 전수조사 아님)")
+    if ranking:
+        st.subheader("정량 기준 상위 1~3순위")
+        top = ranking.get("top3") or []
+        if top:
+            for item in top:
+                st.markdown(f"**{item['rank']}순위 · {item['name']} ({item['code']})** — 영업이익률 {item['operating_margin']:.2f}% · 결산 {item.get('financial_year')}년 · 종가 기준일 {item.get('price_date')}")
+            st.warning("이 순위는 영업이익률 기준의 제한된 후보군 정량 순서입니다. 입력한 자유서술 지침 전체를 충족하거나 매수 적합하다는 뜻이 아닙니다.")
+        else:
+            st.info(ranking.get("reason") or "검증된 기준을 충족하는 후보가 없습니다.")
+        st.caption(ranking.get("mode", "") + f" · 검토 후보 {ranking.get('universe_size', 0)}개")
+    if stored.get("discovery_issue"):
+        st.warning("자동 후보 검색 실패: " + str(stored["discovery_issue"]))
     if selected_project and selected_project.get("instructions"):
         with st.expander("등록된 지침 확인"):
             st.text(selected_project["instructions"])
