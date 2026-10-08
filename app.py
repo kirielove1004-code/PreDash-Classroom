@@ -10,6 +10,7 @@ import importlib
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import streamlit as st
+from project_daily import render as render_project_daily
 from streamlit_js_eval import streamlit_js_eval
 import predash.kiwoom as broker_module
 Kiwoom, BrokerError = broker_module.Kiwoom, broker_module.BrokerError
@@ -574,10 +575,10 @@ with st.sidebar:
     st.link_button('교육자료', 'https://stock-dash-11a.streamlit.app/')
     st.link_button('소통 게시판', 'https://etf2x.com/learn/live')
     st.html('<div class="pd-brand-note">나의 투자 흐름을 읽는 공간</div><div class="pd-side-label">투자 워크스페이스</div>')
-    page=st.radio('메뉴',['오늘의 점검','관심종목','투자 근거','내 계좌','모의투자','매매 연습','매매 습관','연결 설정'],label_visibility='collapsed',key='navigation',
+    page=st.radio('메뉴',['오늘의 점검','관심종목','지침 종목 일일 분석','투자 근거','내 계좌','모의투자','매매 연습','매매 습관','연결 설정'],label_visibility='collapsed',key='navigation',
         index=0 if all(account_settings()[k] for k in ('key','secret')) else 1,
         format_func=lambda item:{'오늘의 점검':'01  투자 대시보드','내 계좌':'04  내 계좌 · 보유종목',
-            '관심종목':'02  관심종목 분석','매매 습관':'07  매매 기록 · 습관',
+            '관심종목':'02  관심종목 분석','지침 종목 일일 분석':'03  지침 종목 · 일일 분석','매매 습관':'07  매매 기록 · 습관',
             '모의투자':'05  모의투자 계좌','매매 연습':'06  매매 연습','연결 설정':'08  데이터 연결','투자 근거':'03  투자 근거 · 비교 차트'}[item])
     st.divider()
     large_text=st.toggle('글자 크게 보기',value=st.query_params.get('text','')=='large')
@@ -827,6 +828,13 @@ elif page=='매매 연습':
                 '수량':t['quantity'],'모의 체결가':t['price'],'종가 기준일':t['price_date'],'판단 이유':t['note']}
                 for t in reversed(account['trades'])],hide_index=True,use_container_width=True)
     st.caption('수익률은 시작 자금 대비 가상 현금과 종가 평가액의 합계 기준입니다. 실제 투자 성과를 검증하는 백테스트가 아닙니다.')
+    st.stop()
+elif page=='지침 종목 일일 분석':
+    current_codes=st.session_state.get('watch_codes', [])
+    if not current_codes:
+        raw=st.query_params.get('watch','')
+        current_codes=clean_codes(raw.split(',') if isinstance(raw,str) else [])
+    render_project_daily(current_codes)
     st.stop()
 elif page=='관심종목':
     st.title('관심종목 점검')
