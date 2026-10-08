@@ -173,6 +173,9 @@ def _save_rules(new_cfg):
     token = _rules_token()
     if not token:
         raise RuntimeError("Streamlit Secrets에 GITHUB_RULES_TOKEN을 먼저 설정해야 영구 저장할 수 있습니다.")
+    # Security guard: this repository is public; never commit private instruction text.
+    if any(str(p.get("instructions", "")).strip() for p in new_cfg.get("projects", [])):
+        raise RuntimeError("공개 저장소에는 투자 지침 원문을 저장할 수 없습니다. 비공개 저장소/Secrets 연동 후 사용하세요.")
     repo = "kirielove1004-code/PreDash-Classroom"
     url = f"https://api.github.com/repos/{repo}/contents/project_daily_config.json"
     headers = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
