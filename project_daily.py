@@ -141,7 +141,7 @@ def collect():
     rankings = {}
     for project in cfg.get("projects", []):
         scope = universe if project.get("auto_discover") else valid_codes(project.get("stocks", []))
-        top, issue = rank_candidates(project, result, scope)
+        top, issue = ([], "자동 후보 검색 실패: 이번 실행에서 순위를 만들지 않았습니다.") if project.get("auto_discover") and discovery_issue else rank_candidates(project, result, scope)
         rankings[project.get("name", "")] = {
             "top3": top, "reason": issue,
             "universe_size": len(scope),
