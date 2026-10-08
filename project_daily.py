@@ -196,13 +196,9 @@ def render_rule_manager(cfg, browser_codes):
     default = valid_codes(cfg.get("watchlist_codes", []))
     selected = st.text_area("매일 수집할 관심종목 (6자리)", value=", ".join(default),
                              key="server_watchlist_codes")
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("현재 브라우저 관심종목 추가", disabled=not bool(browser)):
-            st.session_state.server_watchlist_codes = ", ".join(dict.fromkeys(default + browser))
-            st.rerun()
-    with c2:
-        if st.button("관심종목 영구 저장", disabled=not authorized):
+    if browser:
+        st.caption("현재 브라우저 종목코드 (등록할 목록에 복사): " + ", ".join(browser))
+    if st.button("관심종목 영구 저장", disabled=not authorized):
             try:
                 edited = dict(cfg)
                 edited["watchlist_codes"] = _parse_stock_codes(st.session_state.server_watchlist_codes)
