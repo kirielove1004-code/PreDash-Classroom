@@ -1,0 +1,34 @@
+name: Daily guideline watchlist analysis
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '40 7 * * 1-5'
+permissions:
+  contents: write
+concurrency:
+  group: guideline-watchlist-analysis
+  cancel-in-progress: false
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - name: Update official-data daily snapshot
+        env:
+          DART_CRTFC_KEY: ${{ secrets.DART_CRTFC_KEY }}
+          DATA_GO_KR_SERVICE_KEY: ${{ secrets.DATA_GO_KR_SERVICE_KEY }}
+        run: python -c "from project_daily import collect; collect()"
+      - name: Save results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/project_daily_latest.json
+          if ! git diff --cached --quiet; then
+            git commit -m "data: update daily guideline watchlist analysis"
+            git push
+          fi
