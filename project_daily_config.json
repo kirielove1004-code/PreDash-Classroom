@@ -1,5 +1,35 @@
 {
   "version": 1,
-  "projects": [],
-  "note": "프로젝트 지침은 별도 등록 필요. 자동으로 ChatGPT 프로젝트를 읽지 않음."
+  "watchlist_codes": [],
+  "projects": [
+    {
+      "name": "기업 성장성 · 수익성 (지침 확인 전)",
+      "instructions_verified": false,
+      "stocks": [
+        {
+          "code": "005380",
+          "name": "현대자동차"
+        },
+        {
+          "code": "267260",
+          "name": "HD현대일렉트릭"
+        }
+      ]
+    },
+    {
+      "name": "기술 경쟁력 · 희소성 (지침 확인 전)",
+      "instructions_verified": false,
+      "stocks": [
+        {
+          "code": "214450",
+          "name": "파마리서치"
+        },
+        {
+          "code": "067310",
+          "name": "하나마이크론"
+        }
+      ]
+    }
+  ],
+  "note": "최근 분석을 요청한 기업으로 구성한 임시 점검목록. 실제 ChatGPT 프로젝트별 지침이나 종목 지정과 동일하다고 가정하지 않습니다. 관심종목 자동 갱신에는 watchlist_codes에 6자리 코드를 등록해야 합니다."
 }
