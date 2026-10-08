@@ -178,11 +178,11 @@ def _save_rules(new_cfg):
     serialized = json.dumps(new_cfg, ensure_ascii=False)
     credential_patterns = (
         r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
-        r"\\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\\b",
-        r"\\bgithub_pat_[A-Za-z0-9_]{20,}\\b",
-        r"\\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\\b",
-        r"\\bAIza[0-9A-Za-z_-]{25,}\\b",
-        r'(?i)(?:api[_ -]?key|api[_ -]?secret|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|password|계좌번호)\\s*["\\\']?\\s*[:=]\\s*["\\\']?[^\\s,"\\\']{8,}',
+        r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b",
+        r"\bgithub_pat_[A-Za-z0-9_]{20,}\b",
+        r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b",
+        r"\bAIza[0-9A-Za-z_-]{25,}\b",
+        r"(?i)(?:api[_ -]?key|api[_ -]?secret|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|password|계좌번호)\s*[\"']?\s*[:=]\s*[\"']?[^\s,\"']{8,}",
     )
     if any(re.search(pattern, serialized) for pattern in credential_patterns):
         raise RuntimeError("API 키·토큰·비밀번호·계좌정보로 보이는 값이 포함되어 공개 저장을 차단했습니다. 해당 값은 GitHub/Streamlit Secrets에 저장하세요.")
