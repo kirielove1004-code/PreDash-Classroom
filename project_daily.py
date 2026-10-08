@@ -173,9 +173,19 @@ def _save_rules(new_cfg):
     token = _rules_token()
     if not token:
         raise RuntimeError("Streamlit Secrets에 GITHUB_RULES_TOKEN을 먼저 설정해야 영구 저장할 수 있습니다.")
-    # Security guard: this repository is public; never commit private instruction text.
-    if any(str(p.get("instructions", "")).strip() for p in new_cfg.get("projects", [])):
-        raise RuntimeError("공개 저장소에는 투자 지침 원문을 저장할 수 없습니다. 비공개 저장소/Secrets 연동 후 사용하세요.")
+    # Public guidelines are allowed, but credential-looking values must not be committed.
+    # This is a safeguard, not a replacement for GitHub/Streamlit Secrets.
+    serialized = json.dumps(new_cfg, ensure_ascii=False)
+    credential_patterns = (
+        r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
+        r"\\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\\b",
+        r"\\bgithub_pat_[A-Za-z0-9_]{20,}\\b",
+        r"\\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\\b",
+        r"\\bAIza[0-9A-Za-z_-]{25,}\\b",
+        r'(?i)(?:api[_ -]?key|api[_ -]?secret|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|password|계좌번호)\\s*["\\\']?\\s*[:=]\\s*["\\\']?[^\\s,"\\\']{8,}',
+    )
+    if any(re.search(pattern, serialized) for pattern in credential_patterns):
+        raise RuntimeError("API 키·토큰·비밀번호·계좌정보로 보이는 값이 포함되어 공개 저장을 차단했습니다. 해당 값은 GitHub/Streamlit Secrets에 저장하세요.")
     repo = "kirielove1004-code/PreDash-Classroom"
     url = f"https://api.github.com/repos/{repo}/contents/project_daily_config.json"
     headers = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
@@ -285,7 +295,7 @@ def render_rule_manager(cfg, browser_codes):
                 st.rerun()
             except Exception as exc:
                 st.error("저장 실패: " + str(exc)[:220])
-    st.caption("프로젝트 지침 원문은 GitHub 저장소에 저장됩니다. 민감한 개인정보, API 키 또는 비공개 배포권이 없는 자료는 입력하지 마세요.")
+    st.caption("투자 지침과 분석 결과는 공개 GitHub 저장소에 저장됩니다. API 키·토큰·비밀번호·계좌번호 및 재배포 권한이 없는 자료는 입력하지 마세요. 비밀값은 GitHub/Streamlit Secrets에 보관하세요.")
 
 def render(browser_codes=None):
     import streamlit as st
