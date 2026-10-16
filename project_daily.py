@@ -302,11 +302,13 @@ def render(browser_codes=None):
     st.title("지침 종목 · 일일 분석")
     st.caption("공식 종가와 OpenDART 최근 결산 정보 · 자동 매수 추천 아님")
     cfg = config()
-    view, manage = st.tabs(["일일 분석 결과", "지침 등록 · 편집"])
+    view, metrics, manage = st.tabs(["일일 분석 결과", "소부장 FCF·ROIC·수급", "지침 등록 · 편집"])
     with manage:
         render_rule_manager(cfg, browser_codes)
     with view:
         _render_daily_results(cfg, browser_codes)
+    with metrics:
+        _render_quality_metrics()
 
 
 def _render_daily_results(cfg, browser_codes):
@@ -372,3 +374,40 @@ def _render_daily_results(cfg, browser_codes):
         st.info("이 그룹에 등록된 종목이 없습니다.")
     st.caption("수치의 기준일은 서로 다를 수 있습니다. 기술희소성·경쟁사 경쟁력·미래 성장률·적정주가는 근거 없이 자동 산정하지 않습니다.")
     st.caption("수집 실패 시 이전 값은 유지될 수 있으므로 반드시 마지막 수집일·데이터 상태를 확인하세요.")
+
+
+def _render_quality_metrics():
+    """On-demand verified metrics; no invented values in empty states."""
+    import streamlit as st
+    from predash.quality_metrics import TARGETS, inspect_all
+    st.subheader("소부장 핵심 검증 · TTM FCF / ROIC / 외국인·기관 20일")
+    st.caption("원익QnC·에스앤에스텍·피에스케이. 공식 DART 연결 누적재무 + KRX 공개 수급 보조조회")
+    st.info("ROIC는 NOPAT와 평균 투하자본 산식 검증 전까지 미평가입니다. FCF는 유형·무형자산 취득액 포함, TTM은 전년도 연간+올해 누적-전년도 동기간입니다.")
+    if st.button("3종목 최신 데이터 조회", key="load_quality_metrics"):
+        with st.spinner("공식 데이터 확인 중"):
+            st.session_state["quality_metrics_result"] = inspect_all()
+    payload = st.session_state.get("quality_metrics_result")
+    if not payload:
+        st.caption("조회 버튼을 눌러 최신 지표를 검증하세요. 실제 조회되지 않은 수치는 표시하지 않습니다.")
+        return
+    st.caption("조회 요청일: " + str(payload.get("as_of")))
+    for item in payload.get("stocks", []):
+        st.markdown("#### " + item.get("name", item["code"]) + " (" + item["code"] + ")")
+        fcf=item.get("ttm_fcf")
+        yield_data=item.get("fcf_yield")
+        flow=item.get("flow_20d")
+        c1,c2,c3=st.columns(3)
+        c1.metric("TTM FCF (억원)", f"{fcf['fcf']/1e8:,.1f}" if fcf else "미확인")
+        c2.metric("FCF Yield", f"{yield_data['value_pct']:.2f}%" if yield_data else "미확인")
+        c3.metric("ROIC", "미평가")
+        if fcf:
+            st.caption("FCF 기간: "+str(fcf["period"])+" · 영업현금흐름 "+f"{fcf['ocf']/1e8:,.1f}"+"억원 − CAPEX "+f"{fcf['capex']/1e8:,.1f}"+"억원 (DART 연결)")
+        if yield_data:
+            st.caption("FCF Yield 시총 기준일: "+yield_data["price_date"]+" · "+str(yield_data.get("source","")))
+        if flow:
+            st.write("외국인 20거래일: "+f"{flow['foreign_shares']:+,}"+"주 · 기관: "+f"{flow['institution_shares']:+,}"+"주")
+            st.caption("수급 기준: "+flow["start"]+" ~ "+flow["end"]+" (20거래일, "+flow["source"]+")")
+        else:
+            st.warning("외국인·기관 20거래일 수급: 미확인")
+        for issue in item.get("issues", []):
+            st.caption("확인 필요: "+issue)
