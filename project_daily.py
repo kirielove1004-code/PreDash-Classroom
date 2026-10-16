@@ -399,7 +399,10 @@ def _render_quality_metrics():
         c1,c2,c3=st.columns(3)
         c1.metric("TTM FCF (억원)", f"{fcf['fcf']/1e8:,.1f}" if fcf else "미확인")
         c2.metric("FCF Yield", f"{yield_data['value_pct']:.2f}%" if yield_data else "미확인")
-        c3.metric("ROIC", "미평가")
+        roic=item.get("roic") or {}
+        c3.metric("ROIC (추정)", f"{roic['value_pct']:.2f}%" if roic.get("value_pct") is not None else "미평가")
+        if roic.get("value_pct") is not None:
+            st.caption("ROIC 근사치 ("+str(roic.get("year"))+"년): "+roic.get("method","")+" · "+roic.get("limitations",""))
         if fcf:
             st.caption("FCF 기간: "+str(fcf["period"])+" · 영업현금흐름 "+f"{fcf['ocf']/1e8:,.1f}"+"억원 − CAPEX "+f"{fcf['capex']/1e8:,.1f}"+"억원 (DART 연결)")
         if yield_data:
