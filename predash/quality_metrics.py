@@ -102,6 +102,47 @@ def _flow(code, today):
         return None, "KRX 수급 수집 실패: "+str(exc)[:120]
 
 
+
+def _roic(client, corp, today):
+    """Conservative disclosed-data ROIC proxy, not a universal company ROIC.
+
+    NOPAT = annual operating profit * (1 - assumed normalized tax rate).
+    Capital = total equity + borrowings (short/long) - cash; 2 year-end average.
+    Report neither value when material accounts are unavailable.
+    """
+    year=today.year-1
+    def annual_rows(y):
+        data=client.dart("fnlttSinglAcntAll.json",corp_code=corp,bsns_year=str(y),
+                         reprt_code="11011",fs_div="CFS")
+        return (data or {}).get("list") or []
+    current=annual_rows(year)
+    previous=annual_rows(year-1)
+    if not current or not previous:
+        return None,"2개 연도 연결 연차 재무제표 부족"
+    income=[x for x in current if x.get("sj_div")=="IS"]
+    op=_lookup(income,("dart_OperatingIncomeLoss", "ifrs-full_ProfitLossFromOperatingActivities"),
+               ("영업이익",))
+    def capital(rows):
+        bs=[x for x in rows if x.get("sj_div")=="BS"]
+        equity=_lookup(bs,("ifrs-full_Equity","ifrs_Equity"),("자본총계",))
+        cash=_lookup(bs,("ifrs-full_CashAndCashEquivalents","ifrs_CashAndCashEquivalents"),("현금및현금성자산",))
+        short=_lookup(bs,("ifrs-full_ShorttermBorrowings","dart_ShortTermBorrowings"),("단기차입금",))
+        long=_lookup(bs,("dart_LongTermBorrowingsGross","ifrs-full_LongtermBorrowings"),("장기차입금",))
+        if None in (equity,cash,short,long):
+            return None
+        return equity+short+long-cash
+    c0,c1=capital(previous),capital(current)
+    if op is None or c0 is None or c1 is None or (c0+c1)<=0:
+        return None,"영업이익·자본·차입금·현금 데이터 부족 또는 투하자본 0 이하"
+    # Fixed rate is an explicit simplifying assumption; do not pass off as effective tax.
+    rate=0.25
+    nopat=op*(1-rate)
+    value=100*nopat/((c0+c1)/2)
+    return {"value_pct":round(value,2),"year":year,"basis":"연간 연결",
+            "method":"ROIC 근사치 = 영업이익×(1-가정세율25%)/평균(자본총계+단기·장기차입금-현금)",
+            "tax_rate_assumption":rate,
+            "limitations":"리스·회사채·기타 이자부채 및 비영업자산 누락 가능. 완전한 ROIC 아님"},None
+
 def inspect(code, today=None):
     today=today or date.today()
     result={"code":code,"name":TARGETS.get(code,code),"as_of":today.isoformat(),
@@ -130,9 +171,14 @@ def inspect(code, today=None):
                     result["issues"].append("FCF Yield: 시총 조회 실패 ("+str(exc)[:90]+")")
         except (DataError, ValueError) as exc:
             result["issues"].append("FCF: "+str(exc)[:140])
-    # ROIC is NOT fabricated from ROE, operating margin or incomplete balance-sheet fields.
-    result["roic"]={"value_pct":None,"status":"미평가",
-                    "reason":"NOPAT 및 기초·기말 투하자본(영업자산·무이자부채) 일관된 추출·검증 필요"}
+    result["roic"]={"value_pct":None,"status":"미평가"}
+    if client.dart_key:
+        try:
+            roic, roic_issue=_roic(client,corp,today)
+            if roic: result["roic"]={**roic,"status":"근사치"}
+            else: result["issues"].append("ROIC: "+str(roic_issue))
+        except (DataError,ValueError,UnboundLocalError) as exc:
+            result["issues"].append("ROIC: "+str(exc)[:140])
     flow, issue=_flow(code,today)
     if issue: result["issues"].append("수급: "+issue)
     else: result["flow_20d"]=flow
