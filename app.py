@@ -575,9 +575,9 @@ with st.sidebar:
     st.link_button('교육자료', 'https://stock-dash-11a.streamlit.app/')
     st.link_button('소통 게시판', 'https://etf2x.com/learn/live')
     st.html('<div class="pd-brand-note">나의 투자 흐름을 읽는 공간</div><div class="pd-side-label">투자 워크스페이스</div>')
-    page=st.radio('메뉴',['오늘의 점검','관심종목','지침 종목 일일 분석','투자 근거','내 계좌','모의투자','매매 연습','매매 습관','연결 설정'],label_visibility='collapsed',key='navigation',
+    page=st.radio('메뉴',['오늘의 점검','관심종목','지침 종목 일일 분석','03 PROFIT · 재무제표 검증','투자 근거','내 계좌','모의투자','매매 연습','매매 습관','연결 설정'],label_visibility='collapsed',key='navigation',
         index=0 if all(account_settings()[k] for k in ('key','secret')) else 1,
-        format_func=lambda item:{'오늘의 점검':'01  투자 대시보드','내 계좌':'04  내 계좌 · 보유종목',
+        format_func=lambda item:{'03 PROFIT · 재무제표 검증':'03 PROFIT · 재무제표 검증','오늘의 점검':'01  투자 대시보드','내 계좌':'04  내 계좌 · 보유종목',
             '관심종목':'02  관심종목 분석','지침 종목 일일 분석':'03  지침 종목 · 일일 분석','매매 습관':'07  매매 기록 · 습관',
             '모의투자':'05  모의투자 계좌','매매 연습':'06  매매 연습','연결 설정':'08  데이터 연결','투자 근거':'03  투자 근거 · 비교 차트'}[item])
     st.divider()
@@ -590,6 +590,10 @@ with st.sidebar:
 
 persist_browser_state()
 
+if page == '03 PROFIT · 재무제표 검증':
+    from profit_verifier import render
+    render(official_client)
+    st.stop()
 
 if large_text:
     st.html('<style>.stApp p,.stApp li{font-size:20px}.pd-watch small,.pd-card-sub,.pd-card-note,.pd-card-body small,.pd-holding-head small{font-size:18px}.pd-v-table,.pd-v-empty,.pd-v-notice,.pd-v-company{font-size:18px}.pd-v-note,.pd-v-legend,.pd-v-table small,.pd-v-notice small,.pd-v-company small{font-size:16px}</style>')
@@ -1516,3 +1520,4 @@ else:
                 lines=''.join(f"<div class='pd-check'><b>{i:02d}</b>{html.escape(label)} · {html.escape(value)}</div>" for i,(label,value) in enumerate(checks,1))
                 st.html("<div class='pd-evidence'><h3>오늘의 확인 순서</h3>"+lines+"<p>계좌 조회 "+html.escape(str(snap['fetched']))+"</p></div>")
             st.caption('자료: 키움증권 · OpenDART · 공공데이터포털. 확인 순서는 매수·매도 추천이 아닙니다.')
+
